@@ -158,7 +158,16 @@ _Bot detection allows nothing._ `allow: []`. Every legitimate caller here is a s
 - [x] Arcjet: sign-in required on the stream route, keyed on the Clerk `userId`
 - [x] Arcjet: typecheck, lint, and production build clean
 - [x] Arcjet: verified against the real service, decisions recorded in the console, injection caught at score 0.995, bucket denying on the 31st request
+- [x] Arcjet: fail-open enforced in our own code rather than assumed from the SDK
 - [ ] Arcjet: confirm a real signed-in browser passes bot detection (needs a browser, cannot be done from `curl`)
+
+**What code review changed, 2026-08-13.**
+
+_The model id was a spending hole._ `modelId` accepted any nonempty string and was handed straight to OpenRouter under the app's own key, so any signed-in person could have posted `openai/gpt-4o` and spent real money. "Every model here is free tier" was a product rule that nothing actually enforced. `features/model-call/catalog.ts` now enforces it on the server: an id must be an OpenRouter `:free` variant. Checked against the live catalog, all 15 `:free` models price at zero and no paid model carries the suffix. It is deliberately conservative, three zero-cost models without the suffix are refused, because refusing a free model is far cheaper than accepting a paid one. Feature 5 replaces this with the live free-tier catalog it already has to fetch for the picker.
+
+_Fail-open is now real, and deliberately narrow._ The comment promised the request survives an Arcjet outage, but nothing in our code made that true; it happened to hold only because the SDK converts transport failures into an `ERROR` decision internally. The `protect()` call is now guarded so the guarantee belongs to us rather than to a dependency's implementation detail. Building the client is deliberately left outside the guard: it throws on a missing key or bad rule options, and that has to stay loud, because silently allowing every request when the app is misconfigured would turn a broken deploy into an unprotected one.
+
+_Process-wide client caches are down to one place._ Review flagged the `globalThis` cache as against the functional-style rule. Removing it would be wrong: the database pool genuinely needs to survive hot reload or development keeps opening connections until Postgres refuses more, and a rebuilt Arcjet client throws away its local decision cache. The real problem was that Arcjet had copied the trick, so there were two hand-rolled caches and two unchecked casts. `singleton.ts` now owns it, both clients read as ordinary functions, and the "one place in the app that keeps state" claim is true again.
 
 Every prompt sent, every answer finishing, and every vote cast should be tracked as a real PostHog event, so there's an honest funnel from prompt to answer to vote. A model failing should also be logged properly on the server, not just shown to the user and forgotten. Separately from that funnel, every actual model call should also be wrapped so PostHog captures its own real tokens, cost, and latency per call, that's PostHog's own LLM analytics, not the same thing as the funnel events or the numbers already shown on the response card.
 

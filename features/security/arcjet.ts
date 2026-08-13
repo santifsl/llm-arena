@@ -6,6 +6,7 @@ import arcjet, {
 } from "@arcjet/next";
 
 import { serverEnv } from "@/env";
+import { processSingleton } from "@/singleton";
 
 /**
  * Arcjet sits in front of the arena's prompt endpoint, before any model is ever
@@ -61,11 +62,7 @@ const createArenaClient = () =>
  * `next build` must not need a real key, and a fresh client per request would
  * throw away Arcjet's local caching of decisions.
  */
-const clientCache = globalThis as unknown as {
-  arenaArcjet: ReturnType<typeof createArenaClient> | undefined;
-};
-
-const arenaClient = () => (clientCache.arenaArcjet ??= createArenaClient());
+const arenaClient = processSingleton("arcjet", createArenaClient);
 
 /**
  * What the route should send back when a request is refused. A status and a
@@ -129,16 +126,39 @@ const BLOCKED_DENIAL: ArenaDenial = {
  * If Arcjet itself is unreachable this fails open. A signed-in person losing
  * the ability to use the product because a security service is having an outage
  * is the worse failure of the two, and shield still ran locally.
+ *
+ * The SDK already turns transport and service failures into an `ERROR`
+ * decision rather than throwing, and an `ERROR` decision is not a denial, so
+ * that path fails open on its own. The `catch` is here so the guarantee is a
+ * property of this function rather than an implementation detail of a
+ * dependency: if a future version throws, or the local analysis dies, people
+ * keep their product.
+ *
+ * Note what is deliberately left outside it. Building the client reads the
+ * environment and validates the rule options, so it throws when the app is
+ * misconfigured, not when Arcjet is down, and that has to stay loud. Silently
+ * allowing every request because a key is missing would turn a broken deploy
+ * into an unprotected one, which is the failure this module exists to prevent.
  */
 export const protectArenaStream = async (
   request: Request,
   context: Readonly<{ userId: string; prompt: string }>,
 ): Promise<ArenaDenial | null> => {
-  const decision = await arenaClient().protect(request, {
-    userId: context.userId,
-    requested: 1,
-    detectPromptInjectionMessage: context.prompt,
-  });
+  const client = arenaClient();
+
+  const decision = await client
+    .protect(request, {
+      userId: context.userId,
+      requested: 1,
+      detectPromptInjectionMessage: context.prompt,
+    })
+    .catch((error: unknown) => {
+      console.error("[arena] arcjet could not reach a decision", { error });
+
+      return null;
+    });
+
+  if (!decision) return null;
 
   if (!decision.isDenied()) return null;
 

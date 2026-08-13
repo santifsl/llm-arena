@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isFreeTierModelId } from "./catalog";
+
 /**
  * The wire contract for one model's stream. One request carries one model id,
  * never a list: each selected model gets its own connection so a failure can
@@ -36,7 +38,12 @@ const messageSchema = z
   });
 
 export const streamRequestSchema = z.object({
-  modelId: z.string().min(1),
+  // Not just "a nonempty string": this value is handed to OpenRouter under the
+  // application's own key, so it decides what we get billed for. See
+  // `catalog.ts` for why the free tier is enforced here rather than trusted.
+  modelId: z.string().refine(isFreeTierModelId, {
+    message: "not a free-tier model the arena is willing to call",
+  }),
   messages: z.array(messageSchema).min(1),
 });
 
