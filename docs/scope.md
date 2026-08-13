@@ -86,7 +86,7 @@ _A second, broken Prisma client existed._ `lib/prisma.ts` was a duplicate of `fe
 
 _The proof harness could no longer prove anything._ Once feature 6's Arcjet work put an auth gate in front of the stream route, `/proof` had no way to sign in, so every request from it returned 401. It now shows a Clerk sign-in button when signed out. Clerk 7 removed `<SignedIn>`/`<SignedOut>` in favour of `<Show>`, which is a server component, so the harness asks `useAuth()` directly instead.
 
-_Refusals now show the sentence the server actually wrote._ The route returns real human sentences for 401, 400, and 429, but the harness was overwriting all of them with one generic fallback, which hid exactly the behaviour worth checking. It parses the JSON body and shows that sentence, falling back to the generic one if the body is anything else, so a raw error still never reaches the screen.
+_Refusals now show the sentence the server actually wrote._ The route returns real human sentences for 401, 400, and 429, but the harness was overwriting all of them with one generic fallback, which hid exactly the behaviour worth checking. It parses the JSON body and shows that sentence, falling back to the generic one if the body is anything else, so a raw error still never reaches the screen. This only ever covered the JSON HTTP refusals; a mid-stream model failure carried a bare sentence, not that JSON shape, so it still fell back to the generic message. The stream fix below closes that gap.
 
 **What building half B changed about the plan.**
 
@@ -103,6 +103,14 @@ _Public environment variables are validated separately._ Next.js only inlines `N
 _Analytics failing never breaks the app._ `instrumentation-client.ts` contains its own errors. A misconfigured PostHog key still fails loudly at server boot, which is where a person can actually act on it, rather than in a browser console nobody is reading.
 
 _Startup now needs every key, including PostHog._ This follows directly from the fail-fast rule and is deliberate, but it does mean the app cannot run at all while accounts are still being created. If that proves annoying in practice, the honest fix is to make analytics genuinely optional in the schema, not to weaken the check on the keys the app actually depends on.
+
+**What a broken send turned up, 2026-08-13.**
+
+_The default model id did not exist._ The harness defaulted to `inclusionai/ling-3.0-tiny:free`. It passes the `:free` spend check in `catalog.ts`, but that regex only proves the id claims the free tier, never that OpenRouter serves it. The live catalog has no such model, so every default send failed at the provider. The default is now a real free-tier id, `openai/gpt-oss-20b:free`. The regex still cannot confirm a model exists; feature 5's live catalog is the real fix, and it becomes the picker's default.
+
+_A streamed model failure showed the generic message, not the server's sentence._ `toReaderFacingMessage` wrote a bare sentence into the stream, but the client reads every refusal as the route's JSON `{ error }` shape. The parse failed and the client fell back to "Something went wrong reaching that model", dropping the one sentence written for the reader. The stream now emits the same JSON shape as the HTTP refusals, so a mid-stream failure reaches the screen. This corrects the half-true claim above that refusals show the server's sentence: it held for HTTP bodies only until now.
+
+_Still open._ A model failure is logged to the server console but not captured as a PostHog event, so it stays invisible in analytics. That capture is feature 6's server-side logging and its own LLM-analytics wrapper, both unbuilt, and is not part of this fix.
 
 ### 2. Coding standards & tooling
 
