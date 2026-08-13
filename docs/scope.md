@@ -104,6 +104,8 @@ _Analytics failing never breaks the app._ `instrumentation-client.ts` contains i
 
 _Startup now needs every key, including PostHog._ This follows directly from the fail-fast rule and is deliberate, but it does mean the app cannot run at all while accounts are still being created. If that proves annoying in practice, the honest fix is to make analytics genuinely optional in the schema, not to weaken the check on the keys the app actually depends on.
 
+_Analytics only start in production._ `startAnalytics` returns early when `NODE_ENV !== "production"`. The dev server shares one PostHog project key with production, so an unguarded `posthog.init` sent every local dev crash to the same error-tracking inbox as real user errors. One such crash (a `ReferenceError` from an uncommitted local `/design` edit, off `localhost:3000`, one occurrence, one user) opened its own issue next to the genuine ones. The gate keeps that dev noise out of the shared inbox so the signal stays trustworthy. The trade-off is no local PostHog debugging; if that is ever wanted back, the alternative is to keep init on and register a distinct `environment` property so dev events are filterable instead of gone.
+
 ### 2. Coding standards & tooling
 
 Write down the real conventions for this project once it actually exists, then install linting, formatting, and a pre-commit hook that actually enforces them.
