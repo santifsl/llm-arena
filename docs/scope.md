@@ -171,8 +171,12 @@ _Process-wide client caches are down to one place._ Review flagged the `globalTh
 
 Every prompt sent, every answer finishing, and every vote cast should be tracked as a real PostHog event, so there's an honest funnel from prompt to answer to vote. A model failing should also be logged properly on the server, not just shown to the user and forgotten. Separately from that funnel, every actual model call should also be wrapped so PostHog captures its own real tokens, cost, and latency per call, that's PostHog's own LLM analytics, not the same thing as the funnel events or the numbers already shown on the response card.
 
+_Two PostHog chores are waiting on this feature._ Both were deliberately deferred when PostHog was configured on 2026-08-13, for the same reason: the arena did not exist yet, so there was no route to point at and no events to watch. They are recorded here rather than in the setup report that produced them, because this is the feature whose completion unblocks them. Neither is a code change; both are configuration in PostHog itself.
+
 - [ ] Decide the approach
 - [ ] Build it
+- [ ] PostHog, once the arena route exists: rescope the "Broken experiences" Replay Vision scanner. It was armed against all sessions at a 0.5 sample rate as a fallback, because no arena URL existed to scope it to, so it currently watches everything rather than the flow that matters. Point it at the real completion flow with `$current_url icontains <path>`. Leave the "User frustration" scanner alone, it is gated on `$rageclick` with no URL scope on purpose, so the two stay disjoint and cannot corroborate each other on the same defect.
+- [ ] PostHog, once `prompt_submitted`, `model_selected`, and `vote_cast` are tracked: add the two custom scouts that were ruled out at setup for having no events to watch. An arena submission funnel scout, prompt through streaming completion through vote, looking for conversion drops and abandoned flows; and a model-comparison fairness scout, watching vote distribution across models for unexpected winner bias or bad vote data.
 
 ## Slice 2: App shell & thread history
 
