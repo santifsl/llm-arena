@@ -18,7 +18,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 
 | #   | Feature                                     | Phase      | Status      |
 | --- | ------------------------------------------- | ---------- | ----------- |
-| 1   | Connecting to a model                       | Foundation | built; model calls verified, rest needs keys |
+| 1   | Connecting to a model                       | Foundation | done; verified end to end against real accounts |
 | 2   | Coding standards & tooling                  | Foundation | not started |
 | 3   | Data model                                  | Foundation | not started |
 | 4   | Design & look                               | Foundation | not started |
@@ -49,8 +49,8 @@ PostHog should be wired in from the start too, session replay and heatmaps turne
 - [x] Half B: Prisma 7 with the `@prisma/adapter-pg` driver adapter, client generating
 - [x] Half B: PostHog started in `instrumentation-client.ts`, session replay and heatmaps on, identity bound to the Clerk user
 - [x] Half B: verified against the real accounts, 2026-08-13. Postgres accepts a real query, the server boots with every key present, Clerk's proxy runs and the stream route refuses a signed-out caller with a plain sentence, and PostHog's key resolves with heatmaps on and the host bundled into the client.
-- [ ] Half B: PostHog session replay is **off** at the project level. `disable_session_recording: false` in `posthog.init` cannot turn it on; it is a toggle in PostHog's own project settings and the scope requires it on. Needs one manual flip.
-- [ ] Half B: the model call, Arcjet's rules, and PostHog events confirmed in a real browser while signed in (no other way to reach the route, and this project deliberately has no browser automation)
+- [x] Half B: PostHog session replay switched on, 2026-08-13. Worth remembering if it ever reads as off again: this is a toggle in PostHog's own project settings, and `disable_session_recording: false` in `posthog.init` cannot turn it on from code.
+- [x] Half B: the model call, Arcjet's rules, and PostHog events all confirmed in a real signed-in browser at `/proof`, 2026-08-13. This was the last thing `curl` could not prove, since the route refuses signed-out callers and Arcjet denies every scripted one. One narrower question is deliberately still open under feature 6: whether a browser request is *allowed* by bot detection rather than 403'd was not checked on purpose, so it is not claimed here.
 
 **The approach, decided 2026-08-12.**
 
@@ -159,7 +159,7 @@ _Bot detection allows nothing._ `allow: []`. Every legitimate caller here is a s
 - [x] Arcjet: typecheck, lint, and production build clean
 - [x] Arcjet: verified against the real service, decisions recorded in the console, injection caught at score 0.995, bucket denying on the 31st request
 - [x] Arcjet: fail-open enforced in our own code rather than assumed from the SDK
-- [ ] Arcjet: confirm a real signed-in browser passes bot detection (needs a browser, cannot be done from `curl`)
+- [ ] Arcjet: confirm a real signed-in browser passes bot detection (needs a browser, cannot be done from `curl`, since `allow: []` denies every scripted caller). The signed-in `/proof` run on 2026-08-13 probably exercised this, but it was not checked deliberately, so it stays open until someone confirms a browser request is actually allowed rather than 403'd.
 
 **What code review changed, 2026-08-13.**
 
