@@ -15,11 +15,18 @@ import { METRICS_PART_ID, type ArenaUIMessage } from "./types";
  * A provider can fail in a hundred ugly ways and none of them are the reader's
  * problem. The real error is logged with the model that produced it; the person
  * gets one plain sentence and a retry.
+ *
+ * The sentence ships as the same JSON `{ error }` shape the route returns for
+ * 401, 400, and 429. The client reads every refusal as that shape, so a bare
+ * sentence here would fail its parse and get replaced by a generic fallback,
+ * hiding the one message written for the reader.
  */
-const toReaderFacingMessage = (modelId: string) => (error: unknown) => {
+const toReaderFacingMessage = (modelId: string) => (error: unknown): string => {
   console.error(`[arena] model call failed`, { modelId, error });
 
-  return "This model could not answer. Try again, or send the prompt without it.";
+  return JSON.stringify({
+    error: "This model could not answer. Try again, or send the prompt without it.",
+  });
 };
 
 /**

@@ -9,7 +9,10 @@ import { useState } from "react";
 
 import type { ArenaUIMessage, CallMetrics } from "@/features/model-call/types";
 
-const DEFAULT_MODEL_ID = "inclusionai/ling-3.0-tiny:free";
+// A real OpenRouter free-tier id. The `:free` regex in `catalog.ts` guards the
+// spend rule but cannot confirm a model exists, so a made-up id fails every
+// call. Feature 5 replaces this default with a pick from the live catalog.
+const DEFAULT_MODEL_ID = "openai/gpt-oss-20b:free";
 
 const readMetrics = (message: ArenaUIMessage): CallMetrics | null => {
   const part = message.parts.find((candidate) => candidate.type === "data-metrics");
