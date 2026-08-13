@@ -1,0 +1,12 @@
+// The data model itself is feature 3. This file exists now only so the Prisma
+// client generates and connects, proving the wiring works before any table is
+// designed. Users, threads, messages, and votes land here next.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../features/database/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}

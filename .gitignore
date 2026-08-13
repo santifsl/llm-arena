@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+!.env.example
+
+# generated prisma client
+/features/database/generated
+
+# vendored agent skills, reinstall from skills-lock.json rather than committing
+# ~100 files of third-party docs. `.claude` and `.windsurf` are per-editor
+# symlinks into `.agents`, regenerated on install.
+/.agents
+/.claude
+/.windsurf
