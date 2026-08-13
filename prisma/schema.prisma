@@ -1,6 +1,7 @@
-// The data model itself is feature 3. This file exists now only so the Prisma
-// client generates and connects, proving the wiring works before any table is
-// designed. Users, threads, messages, and votes land here next.
+// The data model for the arena: threads, one turn per prompt, one answer per
+// model on that turn, and a vote picking the winner. The reasoning behind every
+// choice here lives in `docs/scope.md` under feature 3; this file carries only
+// what a reader needs at the point of reading a table.
 
 generator client {
   provider = "prisma-client"
@@ -9,4 +10,134 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+/// A model either finished, is still streaming, or failed. A failure is a real
+/// row rather than a missing one, so a turn honestly records that a model was
+/// asked and did not deliver.
+enum AnswerStatus {
+  STREAMING
+  COMPLETE
+  FAILED
+}
+
+/// One conversation. The id is the public share URL in slice 3, so it is a
+/// cuid2 rather than anything sequential or guessable.
+///
+/// There is no local mirror of the Clerk user: Clerk is the system of record
+/// for identity, and a copy kept in sync by webhook would drift for no gain.
+model Thread {
+  id          String   @id @default(cuid(2))
+  clerkUserId String
+  /// Derived from the first prompt once there is one. Null until then.
+  title       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  turns Turn[]
+  votes Vote[]
+
+  // The sidebar's thread list: this person's threads, newest first.
+  @@index([clerkUserId, createdAt])
+}
+
+/// One prompt round. The prompt text is stored once, on the turn, because every
+/// selected model received exactly the same text.
+model Turn {
+  id        String   @id @default(cuid(2))
+  threadId  String
+  /// Position within the thread, so a turn is addressable and not merely
+  /// sortable by timestamp.
+  index     Int
+  prompt    String
+  createdAt DateTime @default(now())
+
+  thread  Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  answers Answer[]
+  vote    Vote?
+
+  @@unique([threadId, index])
+}
+
+/// One model's reply to one turn.
+///
+/// The metric columns map one to one onto `CallMetrics` in
+/// `features/model-call/types.ts`, nullable in exactly the same places, because
+/// null there means the provider did not report the number and that is
+/// genuinely different from zero. Keeping the column set identical to the type
+/// is what stops the stored row from being the copy that quietly drifts from
+/// the response card and the analytics event.
+model Answer {
+  id      String       @id @default(cuid(2))
+  turnId  String
+  /// An OpenRouter id such as `meta-llama/llama-3.3-70b-instruct:free`. There
+  /// is no local Model table: the catalog is OpenRouter's, it changes without
+  /// us, and feature 5 fetches it live.
+  modelId String
+  status  AnswerStatus @default(STREAMING)
+  text    String       @default("")
+
+  /// For the server log only. A person is never shown this; every visible
+  /// failure is a plain sentence with a retry.
+  failureReason String?
+
+  timeToFirstTokenMs Int?
+  tokensPerSecond    Float?
+  inputTokens        Int?
+  outputTokens       Int?
+  totalTokens        Int?
+  durationMs         Int?
+  /// Free-tier models really do report zero, which is an honest measurement.
+  /// Decimal rather than float so the number is already correct the day a paid
+  /// model lands; it is converted to a plain number in one mapper at the edge.
+  costUsd            Decimal? @db.Decimal(12, 8)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  turn Turn  @relation(fields: [turnId], references: [id], onDelete: Cascade)
+  vote Vote?
+
+  // A model answers a given turn once.
+  @@unique([turnId, modelId])
+  // Not redundant with the primary key: it is the target of the vote's
+  // composite foreign key, which is what makes a vote for another turn's answer
+  // impossible in Postgres rather than merely unlikely in application code.
+  @@unique([id, turnId])
+  // The leaderboard groups by model.
+  @@index([modelId])
+}
+
+/// The winner of one turn. Only the thread's owner votes, so a turn has at most
+/// one vote and `turnId` is unique.
+///
+/// Half of the product rule lives here and half does not, which is worth being
+/// explicit about. That the winning answer belongs to this turn is enforced
+/// below by the composite foreign key. That two or more models actually
+/// answered cannot be a constraint at all, since no check can count rows in
+/// another table, so it is enforced in feature 6's single transactional vote
+/// write. It is the one invariant in this app the database does not hold.
+model Vote {
+  id          String @id @default(cuid(2))
+  turnId      String @unique
+  answerId    String @unique
+  /// Denormalised from the thread so the personal leaderboard never has to join
+  /// back through it.
+  clerkUserId String
+
+  createdAt DateTime @default(now())
+
+  /// Also denormalised, so deleting a thread cascades to its votes directly.
+  threadId String
+  thread   Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  turn Turn @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  answer Answer @relation(fields: [answerId, turnId], references: [id, turnId], onDelete: Cascade)
+
+  // Required by Prisma to treat the composite foreign key above as one-to-one.
+  // Implied already by `turnId` and `answerId` each being unique on their own,
+  // so it constrains nothing new; it exists to make the relation declarable.
+  @@unique([answerId, turnId])
+  @@index([clerkUserId])
 }

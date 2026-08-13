@@ -75,7 +75,10 @@ export type ArenaDenial = Readonly<{
   retryAfterSeconds?: number;
 }>;
 
-const secondsUntil = (resetTime: Date | undefined, now: Date): number | undefined => {
+const secondsUntil = (
+  resetTime: Date | undefined,
+  now: Date,
+): number | undefined => {
   if (!resetTime) return undefined;
 
   const seconds = Math.ceil((resetTime.getTime() - now.getTime()) / 1000);
@@ -94,7 +97,9 @@ const describeWait = (seconds: number | undefined): string => {
   return `in about ${Math.ceil(seconds / 60)} minutes`;
 };
 
-const rateLimitDenial = (retryAfterSeconds: number | undefined): ArenaDenial => ({
+const rateLimitDenial = (
+  retryAfterSeconds: number | undefined,
+): ArenaDenial => ({
   status: 429,
   message: `You have sent a lot of prompts in a short time. Try again ${describeWait(
     retryAfterSeconds,
@@ -116,7 +121,8 @@ const BOT_DENIAL: ArenaDenial = {
 
 const BLOCKED_DENIAL: ArenaDenial = {
   status: 403,
-  message: "That request was blocked for security reasons. Reload the page and try again.",
+  message:
+    "That request was blocked for security reasons. Reload the page and try again.",
 };
 
 /**

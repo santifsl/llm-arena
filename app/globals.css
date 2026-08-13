@@ -1,26 +1,265 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* Dark is this product's real identity, so it is what `:root` holds and what a
+   visitor with no stated preference gets. Light is an override, applied when
+   the system asks for it or when the app explicitly sets `.light`.
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+   `dark:` has to fire in both of the ways dark can be reached, or a shadcn
+   component styled with it would silently disagree with the tokens around it.
+   shadcn's own variant only covers the class. */
+@custom-variant dark {
+  &:where(:root:not(.light), :root:not(.light) *) {
+    @slot;
+  }
+  &:where(.dark, .dark *) {
+    @slot;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Every hex in this app is written exactly once, here. Nothing below this block
+   states a colour; it only decides which of these a role points at. */
+:root {
+  --coffee-950: #1a120c;
+  --coffee-900: #241811;
+  --coffee-850: #2f2118;
+  --coffee-800: #3d2c21;
+
+  --clay-300: #c9b7a4;
+  --clay-100: #e8dccf;
+  --clay-50: #f2eae0;
+  --clay-25: #f7f0e7;
+
+  --warm-white: #f2e6dc;
+  --taupe: #b39c8c;
+  --umber: #6b564a;
+
+  --rust-bright: #e4622d;
+  --rust-deep: #9e3a15;
+  --rust-track-dark: #6b2e14;
+  --rust-track-light: #e0c9b8;
+
+  --moss-bright: #4fa46a;
+  --moss-deep: #24693f;
+
+  --rose-bright: #e85c74;
+  --rose-deep: #b32b4a;
+}
+
+/* The roles. Read these, never the scale above. */
+:root {
+  --ground: var(--coffee-950);
+  --surface: var(--coffee-900);
+  --surface-raised: var(--coffee-850);
+  --rule: var(--coffee-800);
+  --ink: var(--warm-white);
+  --ink-dim: var(--taupe);
+  --rust: var(--rust-bright);
+  --rust-ink: var(--coffee-950);
+  --rust-quiet: var(--rust-track-dark);
+  --win: var(--moss-bright);
+  --fail: var(--rose-bright);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not(.dark) {
+    --ground: var(--clay-100);
+    --surface: var(--clay-50);
+    --surface-raised: var(--clay-25);
+    --rule: var(--clay-300);
+    --ink: var(--coffee-900);
+    --ink-dim: var(--umber);
+    --rust: var(--rust-deep);
+    --rust-ink: var(--clay-25);
+    --rust-quiet: var(--rust-track-light);
+    --win: var(--moss-deep);
+    --fail: var(--rose-deep);
+  }
+}
+
+.light {
+  --ground: var(--clay-100);
+  --surface: var(--clay-50);
+  --surface-raised: var(--clay-25);
+  --rule: var(--clay-300);
+  --ink: var(--coffee-900);
+  --ink-dim: var(--umber);
+  --rust: var(--rust-deep);
+  --rust-ink: var(--clay-25);
+  --rust-quiet: var(--rust-track-light);
+  --win: var(--moss-deep);
+  --fail: var(--rose-deep);
+}
+
+/* shadcn's vocabulary, pointed at ours, so anything added with `shadcn add`
+   arrives already wearing this palette instead of neutral gray. */
+:root,
+.light,
+.dark {
+  --background: var(--ground);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface-raised);
+  --popover-foreground: var(--ink);
+  --primary: var(--rust);
+  --primary-foreground: var(--rust-ink);
+  --secondary: var(--surface-raised);
+  --secondary-foreground: var(--ink);
+  --muted: var(--surface-raised);
+  --muted-foreground: var(--ink-dim);
+  --accent: var(--surface-raised);
+  --accent-foreground: var(--ink);
+  --destructive: var(--fail);
+  --border: var(--rule);
+  --input: var(--rule);
+  --ring: var(--rust);
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--rust);
+  --sidebar-primary-foreground: var(--rust-ink);
+  --sidebar-accent: var(--surface-raised);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--rule);
+  --sidebar-ring: var(--rust);
+
+  /* An instrument panel, not a card sorter. Corners are cut, not rounded. */
+  --radius: 0.25rem;
+}
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-rule: var(--rule);
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-rust: var(--rust);
+  --color-rust-ink: var(--rust-ink);
+  --color-rust-quiet: var(--rust-quiet);
+  --color-win: var(--win);
+  --color-fail: var(--fail);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans: var(--font-archivo);
+  --font-serif: var(--font-literata);
+  --font-mono: var(--font-jetbrains-mono);
+  --font-heading: var(--font-archivo);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply font-sans;
+    color-scheme: dark;
+  }
+
+  @media (prefers-color-scheme: light) {
+    html:not(.dark) {
+      color-scheme: light;
+    }
+  }
+
+  html.light {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-ground text-ink;
+  }
+
+  /* The accessibility baseline, stated once for the whole app rather than
+     remembered per component. Rust is the focus colour everywhere. */
+  :focus-visible {
+    outline: 2px solid var(--rust);
+    outline-offset: 2px;
+    border-radius: 1px;
+  }
+
+  ::selection {
+    background: var(--rust);
+    color: var(--rust-ink);
+  }
+}
+
+@layer components {
+  /* Signage. Archivo widened, for the things that name or score something:
+     page titles, the win-rate figure, a model's badge. Used sparingly on
+     purpose; widening everything would just be shouting. */
+  .signage {
+    font-family: var(--font-sans);
+    font-variation-settings: "wdth" 112;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  /* Every measured number in the app. Tabular figures are not a nicety here:
+     digits that change width while a stream is running would make honestly
+     measured numbers look like they are wobbling. */
+  .numeral {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "zero" 1;
+    letter-spacing: -0.01em;
+  }
+
+  /* What a model actually said, as opposed to anything this app says. The
+     serif is the whole separation, so it is never used for UI chrome. */
+  .answer-prose {
+    font-family: var(--font-serif);
+    font-size: 0.9375rem;
+    line-height: 1.65;
+    color: var(--ink);
+  }
+
+  .answer-prose p + p {
+    margin-top: 0.75em;
+  }
+
+  /* A caption or a column heading: small, quiet, and unmistakably ours. */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
 }

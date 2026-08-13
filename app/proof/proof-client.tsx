@@ -12,7 +12,9 @@ import type { ArenaUIMessage, CallMetrics } from "@/features/model-call/types";
 const DEFAULT_MODEL_ID = "inclusionai/ling-3.0-tiny:free";
 
 const readMetrics = (message: ArenaUIMessage): CallMetrics | null => {
-  const part = message.parts.find((candidate) => candidate.type === "data-metrics");
+  const part = message.parts.find(
+    (candidate) => candidate.type === "data-metrics",
+  );
 
   return part === undefined ? null : part.data;
 };
@@ -61,12 +63,13 @@ export function ProofClient() {
   const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
   const [prompt, setPrompt] = useState("In one sentence, what is a token?");
 
-  const { messages, sendMessage, status, error, stop, clearError } = useChat<ArenaUIMessage>({
-    transport: new DefaultChatTransport({
-      api: "/api/arena/stream",
-      body: () => ({ modelId }),
-    }),
-  });
+  const { messages, sendMessage, status, error, stop, clearError } =
+    useChat<ArenaUIMessage>({
+      transport: new DefaultChatTransport({
+        api: "/api/arena/stream",
+        body: () => ({ modelId }),
+      }),
+    });
 
   const isBusy = status === "submitted" || status === "streaming";
 
@@ -156,7 +159,8 @@ export function ProofClient() {
                   <dd>{show(metrics.tokensPerSecond, "tok/s")}</dd>
                   <dt>tokens in / out / total</dt>
                   <dd>
-                    {show(metrics.inputTokens, "in")}, {show(metrics.outputTokens, "out")},{" "}
+                    {show(metrics.inputTokens, "in")},{" "}
+                    {show(metrics.outputTokens, "out")},{" "}
                     {show(metrics.totalTokens, "total")}
                   </dd>
                   <dt>duration</dt>

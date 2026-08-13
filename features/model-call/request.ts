@@ -32,7 +32,11 @@ const messageSchema = z
     role: z.enum(["system", "user", "assistant"]),
     parts: z.array(z.unknown()),
   })
-  .transform(({ id, role, parts }) => ({ id, role, parts: keepTextParts(parts) }))
+  .transform(({ id, role, parts }) => ({
+    id,
+    role,
+    parts: keepTextParts(parts),
+  }))
   .refine(({ parts }) => parts.length > 0, {
     message: "a message needs at least one text part",
   });
