@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -43,21 +44,42 @@ export const useShell = (): ShellState => {
   return shell;
 };
 
+/** Tailwind's `md`, the width at which the drawer becomes a plain column. */
+const DESKTOP_QUERY = "(min-width: 48rem)";
+
 export const AppShell = ({ children }: { readonly children: ReactNode }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  /** Whatever had focus when the drawer opened, so it can be given back. */
+  const triggerRef = useRef<HTMLElement | null>(null);
 
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+  const openDrawer = useCallback(() => {
+    triggerRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setDrawerOpen(true);
+  }, []);
+
+  // Focus is returned to the control that opened the drawer. Leaving it on a
+  // background control means a keyboard user resumes somewhere they never
+  // chose, in a part of the page that was behind a backdrop a moment ago.
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen((wasOpen) => {
+      if (wasOpen) triggerRef.current?.focus();
+      return false;
+    });
+  }, []);
 
   const shell = useMemo<ShellState>(
     () => ({
       collapsed,
       drawerOpen,
       toggleCollapsed: () => setCollapsed((previous) => !previous),
-      openDrawer: () => setDrawerOpen(true),
+      openDrawer,
       closeDrawer,
     }),
-    [collapsed, drawerOpen, closeDrawer],
+    [collapsed, drawerOpen, openDrawer, closeDrawer],
   );
 
   useEffect(() => {
@@ -69,16 +91,42 @@ export const AppShell = ({ children }: { readonly children: ReactNode }) => {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [drawerOpen, closeDrawer]);
 
+  // Widening past `md` turns the drawer back into an ordinary column, and a
+  // column must not trap focus. Closing the drawer on that transition keeps
+  // "drawer is open" and "drawer is modal" the same statement, which is what
+  // the focus trap in `Sidebar` relies on. This measures the viewport, which
+  // the two-state design otherwise avoids, but it does so after hydration in
+  // response to a resize, so there is nothing here to flash or disagree with
+  // the server on first paint.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const desktop = window.matchMedia(DESKTOP_QUERY);
+    if (desktop.matches) {
+      closeDrawer();
+      return;
+    }
+    const onChange = (event: MediaQueryListEvent) => {
+      if (event.matches) closeDrawer();
+    };
+    desktop.addEventListener("change", onChange);
+    return () => desktop.removeEventListener("change", onChange);
+  }, [drawerOpen, closeDrawer]);
+
   return (
     <ShellContext.Provider value={shell}>
       <div className="flex h-dvh w-full overflow-hidden">
         <Sidebar />
 
+        {/* A mouse affordance only. It is kept out of the tab order because a
+            keyboard user closes the drawer with Escape or its own close
+            control, and a full-screen tab stop that reads "close" would just
+            be a second one of those. */}
         {drawerOpen && (
           <button
             type="button"
+            tabIndex={-1}
+            aria-hidden
             onClick={closeDrawer}
-            aria-label="Close the menu"
             className="fixed inset-0 z-40 bg-black/60 md:hidden"
           />
         )}

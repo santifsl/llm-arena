@@ -17,6 +17,16 @@ const NAV = [
   { href: "/models", label: "Models", Icon: Boxes },
 ] as const;
 
+/** Everything that can hold focus inside the drawer, in document order. */
+const FOCUSABLE = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
 const isActive = (pathname: string, href: string): boolean =>
   href === "/" ? pathname === "/" : pathname.startsWith(href);
 
@@ -24,6 +34,7 @@ export const Sidebar = () => {
   const { collapsed, drawerOpen, closeDrawer } = useShell();
   const pathname = usePathname();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const asideRef = useRef<HTMLElement>(null);
 
   // Clerk's `<Show>` is a server component and this sidebar is a client one, so
   // the hook is the way in. Until it has loaded, neither state is rendered:
@@ -37,9 +48,54 @@ export const Sidebar = () => {
     if (drawerOpen) closeRef.current?.focus();
   }, [drawerOpen]);
 
+  // While it is a drawer it is modal, so Tab has to stay inside it. Without
+  // this, tabbing past the last link walks into the page behind the backdrop,
+  // which is both unreachable by mouse and invisible under it.
+  //
+  // `AppShell` closes the drawer when the viewport widens past `md`, so
+  // `drawerOpen` can be trusted to mean "modal" here. On a wide screen this is
+  // an ordinary column and trapping focus in it would be the actual bug.
+  useEffect(() => {
+    const aside = asideRef.current;
+    if (!drawerOpen || aside === null) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+
+      const focusable = Array.from(
+        aside.querySelectorAll<HTMLElement>(FOCUSABLE),
+      ).filter((element) => element.offsetParent !== null);
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      const leavingBackwards = event.shiftKey && active === first;
+      const leavingForwards = !event.shiftKey && active === last;
+      const escaped = !(active instanceof Node) || !aside.contains(active);
+
+      if (leavingBackwards || (escaped && event.shiftKey)) {
+        event.preventDefault();
+        last.focus();
+      } else if (leavingForwards || escaped) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [drawerOpen]);
+
   return (
     <aside
-      aria-label="Main"
+      ref={asideRef}
+      // Only a dialog while it is a drawer. As a desktop column it is a plain
+      // landmark, and claiming to be modal there would be a lie to a screen
+      // reader.
+      role={drawerOpen ? "dialog" : undefined}
+      aria-modal={drawerOpen ? true : undefined}
+      aria-label="Main menu"
       className={cn(
         "w-64 shrink-0 flex-col border-r border-rule bg-surface",
         "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50",

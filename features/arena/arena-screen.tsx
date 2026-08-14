@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { ModelRecord } from "@/components/model-record";
+import { ModelRecord } from "@/features/arena/model-record";
 import { AnswerCard } from "@/features/arena/answer-card";
 import { Composer, MAX_MODELS } from "@/features/arena/composer";
 import {

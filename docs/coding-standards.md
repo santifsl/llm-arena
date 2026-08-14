@@ -116,11 +116,33 @@ mutating loops. Not lintable without a preset strict enough to fight the
 framework, so it is on the reader.
 
 **Folder by feature, not by layer.** `features/model-call/`,
-`features/security/`, `features/analytics/`, `features/database/`. There is no
-`lib/`, no `utils/`, no `components/` at the root collecting unrelated things.
-A duplicate Prisma client once lived in `lib/`, was referenced by nothing, and
-failed typecheck unnoticed — a layer folder is where code goes to be forgotten.
+`features/security/`, `features/analytics/`, `features/database/`. A duplicate
+Prisma client once lived in `lib/`, was referenced by nothing, and failed
+typecheck unnoticed — a layer folder is where code goes to be forgotten.
 Routes under `app/` stay thin: parse, protect, delegate to a feature.
+
+This rule read as an outright ban on a root `components/` until the design
+system was built, and that was too strong: `CLAUDE.md` also requires a repeated
+UI pattern to become a shared component, and a component three features render
+has no feature to live in. The test is not the folder, it is the number of
+consumers.
+
+- **More than one feature renders it** — root `components/`. Today that is
+  `trace.tsx`, which the arena, the leaderboard, and the shell all draw, and
+  `model-badge.tsx`. Each one says in its own header why it is there.
+- **One feature renders it** — that feature's folder, however shared it looks.
+  `model-record.tsx` sat in `components/` while only the arena used it, and was
+  moved to `features/arena/` in review. Composing shared pieces does not make
+  something shared.
+- **shadcn owns the path** — `components/ui/` and `lib/utils.ts` are fixed by
+  `components.json`. Moving them would break `shadcn add` for every component
+  added later, which is a worse outcome than two directories that do not match
+  the convention. They are generated, not written here.
+
+The original failure this rule guards against was code with no consumers. A
+component with three is the opposite problem, and copying it into three
+features to satisfy the letter of the rule would break the copy-paste rule
+instead.
 
 **Never show a raw exception or a provider error.** Every failure a person can
 see is a plain human sentence plus a retry action. The stream route's 401, 400,
