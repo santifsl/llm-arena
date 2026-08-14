@@ -26,7 +26,8 @@ const registry = globalThis as unknown as {
  * Returns a getter, so reading the value stays an explicit act at the call site
  * rather than a module-level side effect.
  */
-export const processSingleton = <T>(name: string, create: () => T): (() => T) =>
+export const processSingleton =
+  <T>(name: string, create: () => T): (() => T) =>
   () => {
     const store = (registry.arenaSingletons ??= new Map<string, unknown>());
 

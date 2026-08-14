@@ -1,0 +1,11 @@
+# Generated or vendored, never hand-edited.
+.next/
+features/database/generated/
+next-env.d.ts
+pnpm-lock.yaml
+public/
+
+# Per-editor symlinks into vendored agent skills.
+.agents/
+.claude/
+.windsurf/

@@ -29,8 +29,10 @@ There's no formal spec-file system here, no numbered acceptance criteria, no sep
 - Every model in this app is free tier. Cost will always read $0.0000, that's correct, not a bug, show it anyway since it's still a real, honestly measured number.
 - Never show a raw exception or provider error to the user. A plain, human sentence and a retry action, always.
 - Shared values, spacing, color, repeated UI patterns, live in `globals.css` or a shared component, never copy-pasted as raw Tailwind classes across files. If the same handful of classes show up in three places, that's a component, not a coincidence.
-- After building or changing anything, actually run it, typecheck, lint, and a real build, not just read the code and assume it's right. Fix whatever fails before calling the step done.
+- After building or changing anything, actually run it, typecheck, lint, and a real build, not just read the code and assume it's right. Fix whatever fails before calling the step done. `pnpm verify` is all four in one command.
 - No test runner, no browser automation framework, for this project. Verify manually, a running dev server and a real browser, or something as light as `curl`. That's already decided, not something to add later, don't install one to check something works.
+
+The long version of all of the above, including which of these a tool actually enforces and which one only a reader will catch, is in `docs/coding-standards.md`. Read it before writing code, and correct it in place if building proves a rule wrong.
 
 ## Design
 

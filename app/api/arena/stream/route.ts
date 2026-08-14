@@ -1,7 +1,10 @@
 import { auth } from "@clerk/nextjs/server";
 import { createUIMessageStreamResponse } from "ai";
 
-import { latestUserPrompt, streamRequestSchema } from "@/features/model-call/request";
+import {
+  latestUserPrompt,
+  streamRequestSchema,
+} from "@/features/model-call/request";
 import { streamModelAnswer } from "@/features/model-call/stream-model-answer";
 import { protectArenaStream } from "@/features/security/arcjet";
 
@@ -55,5 +58,7 @@ export async function POST(request: Request) {
     );
   }
 
-  return createUIMessageStreamResponse({ stream: streamModelAnswer(parsed.data) });
+  return createUIMessageStreamResponse({
+    stream: streamModelAnswer(parsed.data),
+  });
 }

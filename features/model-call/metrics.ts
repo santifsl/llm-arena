@@ -26,10 +26,16 @@ export type CallOutcome = {
  * accounting is enabled. Parsed rather than cast, so an unexpected shape
  * degrades to $0.0000 instead of throwing or lying.
  */
-const openRouterUsageSchema = z.object({ cost: z.number().nonnegative().optional() });
+const openRouterUsageSchema = z.object({
+  cost: z.number().nonnegative().optional(),
+});
 
-const readCostUsd = (providerMetadata: ProviderMetadata | undefined): number => {
-  const parsed = openRouterUsageSchema.safeParse(providerMetadata?.openrouter?.usage);
+const readCostUsd = (
+  providerMetadata: ProviderMetadata | undefined,
+): number => {
+  const parsed = openRouterUsageSchema.safeParse(
+    providerMetadata?.openrouter?.usage,
+  );
 
   return parsed.success ? (parsed.data.cost ?? 0) : 0;
 };
@@ -46,7 +52,9 @@ export const toCallMetrics = ({
 }: CallOutcome): CallMetrics => {
   // The rate after the first token is what a person perceives as typing speed.
   // The effective rate over the whole call is the fallback for non-streaming.
-  const perSecond = performance.outputTokensPerSecond ?? performance.effectiveOutputTokensPerSecond;
+  const perSecond =
+    performance.outputTokensPerSecond ??
+    performance.effectiveOutputTokensPerSecond;
 
   return {
     timeToFirstTokenMs:

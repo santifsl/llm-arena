@@ -9,15 +9,9 @@ const serverEnvSchema = z.object({
   OPENROUTER_API_KEY: z
     .string()
     .min(1, "required: create a key at https://openrouter.ai/keys"),
-  CLERK_SECRET_KEY: z
-    .string()
-    .min(1, "required: Clerk dashboard, API keys"),
-  DATABASE_URL: z
-    .string()
-    .min(1, "required: a Postgres connection string"),
-  ARCJET_KEY: z
-    .string()
-    .min(1, "required: Arcjet console, site key"),
+  CLERK_SECRET_KEY: z.string().min(1, "required: Clerk dashboard, API keys"),
+  DATABASE_URL: z.string().min(1, "required: a Postgres connection string"),
+  ARCJET_KEY: z.string().min(1, "required: Arcjet console, site key"),
 });
 
 /**
@@ -32,17 +26,24 @@ const publicEnvSchema = z.object({
   NEXT_PUBLIC_POSTHOG_KEY: z
     .string()
     .min(1, "required: PostHog project settings"),
-  NEXT_PUBLIC_POSTHOG_HOST: z
-    .url("required: usually https://eu.i.posthog.com or https://us.i.posthog.com"),
+  NEXT_PUBLIC_POSTHOG_HOST: z.url(
+    "required: usually https://eu.i.posthog.com or https://us.i.posthog.com",
+  ),
 });
 
 export type ServerEnv = Readonly<z.infer<typeof serverEnvSchema>>;
 export type PublicEnv = Readonly<z.infer<typeof publicEnvSchema>>;
 
 const formatIssues = (issues: readonly z.core.$ZodIssue[]): string =>
-  issues.map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`).join("\n");
+  issues
+    .map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`)
+    .join("\n");
 
-const parseEnv = <T>(schema: z.ZodType<T>, source: unknown, label: string): Readonly<T> => {
+const parseEnv = <T>(
+  schema: z.ZodType<T>,
+  source: unknown,
+  label: string,
+): Readonly<T> => {
   const result = schema.safeParse(source);
 
   if (!result.success) {
@@ -72,7 +73,8 @@ export const publicEnv = (): PublicEnv =>
   parseEnv(
     publicEnvSchema,
     {
-      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:
+        process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
       NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
       NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
     },

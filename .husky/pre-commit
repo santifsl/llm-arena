@@ -1,0 +1,9 @@
+# Abort on the first failure. Without this the hook's exit code is whatever the
+# last line returned, so a failing lint-staged would still let the commit through.
+set -e
+
+# Lint and format only what is staged, then typecheck the whole project.
+# Types are cross-file, so a staged-only typecheck would prove nothing.
+# The production build stays out of here on purpose; that is `pnpm verify`.
+pnpm lint-staged
+pnpm typecheck
