@@ -90,6 +90,11 @@ model Answer {
   /// which only one of them can do, and every terminal write is conditional on
   /// still holding it. Retrying clears it, which is what makes a late write
   /// from the abandoned call a no-op rather than a corruption.
+  ///
+  /// A claim whose process died is released by nothing, so a claim on a row that
+  /// is still `STREAMING` and has not been written to for five minutes can be
+  /// taken over. `updatedAt` is the claim's own timestamp, since nothing writes
+  /// to the row while it streams.
   streamClaimId String?
 
   timeToFirstTokenMs Int?

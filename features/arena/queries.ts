@@ -22,6 +22,17 @@ import { titleFromPrompt, type AnswerView, type ThreadView } from "./thread";
  * the action or route above turns that into a plain sentence.
  */
 
+/**
+ * How long a claimed, still-streaming answer may go without being written to
+ * before another request may take its claim over.
+ *
+ * `updatedAt` is exactly the moment the claim was taken, because nothing writes
+ * to the row between claiming it and finishing it. Five minutes is far longer
+ * than any model call this app makes survives, so this can only ever fire on a
+ * call whose process is gone.
+ */
+const STALE_CLAIM_MS = 5 * 60 * 1000;
+
 const STATE_BY_STATUS = {
   [AnswerStatus.STREAMING]: "streaming",
   [AnswerStatus.COMPLETE]: "complete",
@@ -219,12 +230,24 @@ export const claimAnswerForStream = async (
   // to call the provider, and a second request naming the same answer is
   // refused before it costs anything. The row must also still be `STREAMING`:
   // an answer that already finished is not something to answer again.
+  //
+  // The second half of the `OR` is the recovery path. A claim is released by
+  // `completeAnswer` or `failAnswer`, and neither of them runs if the process
+  // holding the claim dies mid-call: a deploy, a crash, a function killed at its
+  // time limit. Without this the row would keep a claim nobody holds and refuse
+  // every later request forever. Taking the claim over is safe for the same
+  // reason a retry is: this write moves `streamClaimId` to a new id, so if the
+  // abandoned call is somehow still alive, its terminal writes are conditional
+  // on a claim it no longer holds and land nowhere.
   const { count } = await database().answer.updateMany({
     where: {
       id: answerId,
       status: AnswerStatus.STREAMING,
-      streamClaimId: null,
       turn: { thread: { clerkUserId } },
+      OR: [
+        { streamClaimId: null },
+        { updatedAt: { lt: new Date(Date.now() - STALE_CLAIM_MS) } },
+      ],
     },
     data: { streamClaimId: claimId },
   });
