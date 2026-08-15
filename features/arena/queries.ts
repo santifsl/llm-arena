@@ -350,12 +350,21 @@ export type VoteRefusal =
   | "already-voted"
   | "failed";
 
-/** Postgres refusing a duplicate, which is a real outcome rather than a crash. */
-const isUniqueViolation = (error: unknown): boolean =>
+const hasPrismaCode = (error: unknown, code: string): boolean =>
   typeof error === "object" &&
   error !== null &&
   "code" in error &&
-  (error as { readonly code?: unknown }).code === "P2002";
+  (error as { readonly code?: unknown }).code === code;
+
+/** Postgres refusing a duplicate, which is a real outcome rather than a crash. */
+const isUniqueViolation = (error: unknown): boolean =>
+  hasPrismaCode(error, "P2002");
+
+/**
+ * An update whose `where` matched nothing. For a conditional update that is the
+ * refusal itself rather than a failure, the same way `count === 0` is.
+ */
+const isMissingRow = (error: unknown): boolean => hasPrismaCode(error, "P2025");
 
 /**
  * Picks the winner of one turn, in a single transaction.
@@ -427,31 +436,49 @@ export const reopenAnswer = async (
   answerId: string,
   clerkUserId: string,
 ): Promise<AnswerView | null> => {
-  const owned = await database().answer.findFirst({
-    where: { id: answerId, turn: { thread: { clerkUserId } } },
-    select: { id: true },
-  });
+  const answer = await database()
+    .answer.update({
+      // Ownership, the status rule, and the write are one statement. Reading the
+      // row first and then updating it by id is the read-decide-write shape that
+      // produced both of this codebase's earlier concurrency bugs, and there is
+      // no reason to keep it here when the filter fits in the update.
+      where: {
+        id: answerId,
+        // A finished answer is not something to run again. The card only ever
+        // offers a retry on a failure, so this forbids nothing a person can
+        // click; it stops a direct call to the action from wiping an answer that
+        // is complete, which would strand any vote already cast for it.
+        status: { not: AnswerStatus.COMPLETE },
+        turn: { thread: { clerkUserId } },
+      },
+      data: {
+        status: AnswerStatus.STREAMING,
+        // Clearing the claim is what releases the row to the retry, including
+        // when the claim is still live. That is deliberate: a person clicking
+        // retry has been shown a failure, and the card shows one when their
+        // connection dropped while the server's own call kept running, or when
+        // the process holding the claim died. The retry has to win in both
+        // cases, and it is safe to let it, because the abandoned call's terminal
+        // writes are conditional on a claim it no longer holds.
+        streamClaimId: null,
+        text: "",
+        failureReason: null,
+        timeToFirstTokenMs: null,
+        tokensPerSecond: null,
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+        durationMs: null,
+        costUsd: null,
+      },
+    })
+    // No row matched, so this is not a failed answer of this person's. An
+    // ordinary refusal, not something to log as a crash.
+    .catch((error: unknown) => {
+      if (isMissingRow(error)) return null;
 
-  if (owned === null) return null;
+      throw error;
+    });
 
-  const answer = await database().answer.update({
-    where: { id: answerId },
-    data: {
-      status: AnswerStatus.STREAMING,
-      // Clearing the claim is what releases the row to the retry. Any call
-      // still running against the old claim can no longer write to it.
-      streamClaimId: null,
-      text: "",
-      failureReason: null,
-      timeToFirstTokenMs: null,
-      tokensPerSecond: null,
-      inputTokens: null,
-      outputTokens: null,
-      totalTokens: null,
-      durationMs: null,
-      costUsd: null,
-    },
-  });
-
-  return toAnswerView(answer, false);
+  return answer === null ? null : toAnswerView(answer, false);
 };
