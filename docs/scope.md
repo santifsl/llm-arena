@@ -449,6 +449,16 @@ _Worth keeping in mind for later features._ Both bugs were the same shape: a rea
 
 _The two harnesses went at the end of half B, and one thing had to happen first._ Feature 1 said `/proof` is deleted once the real arena exists and feature 4 said the same about `/design`, and half B is that moment. But feature 4's by-eye check is still open and `/design` is the page it needs, so that check has to be done before the harness is removed, or the box gets closed by deleting its evidence.
 
+**What a Replay Vision scan surfaced, 2026-08-15.** A vote landed in the database and the screen still said it could not be saved and took the winner back off the card. The closer above was too confident: the vote's counting is safe inside the transaction, but the client and the error path around it were not, and both are the same read-decide-write shape the closer warned about.
+
+_A vote had no in-flight guard, so a double click cast it twice._ `retry` blocks a second click with `retryingId`; `vote` blocked nothing, so pressing the same card twice sent a second `voteForAnswer` for a turn the first click had already won. The second one is the loser of a race for a vote that is already stored. `vote` now blocks while one is in flight, the same way `retry` does.
+
+_A refusal always took the winner back, even when the vote existed._ The optimistic winner shows the instant the pick is clicked, and every refusal restored the previous winner and showed the red sentence. When the refusal is `already-voted`, a winner is stored, so taking it back is the screen contradicting the database. `voteForAnswer` now says whether a winner is stored, and the screen keeps it and shows nothing when one is.
+
+_`castVote` only knew a duplicate as `P2002`._ Two votes that race both pass the checks and both insert; the loser can surface as a plain duplicate, a write conflict, or another failure on `Vote_turnId_key`, and everything but `P2002` fell through to the catch-all "could not be saved". The honest answer is not the error code but whether a winner is now stored, so the catch reads the vote back and returns `already-voted` when one is.
+
+_A refused vote was invisible in analytics._ `voteForAnswer` only emitted on success, so the reason a vote was refused stayed in the server log where no scanner and no person could see it. A `vote_refused` event now carries the reason on every refusal, which is how this one would show up in data rather than only in a terminal.
+
 ## Slice 2: App shell & thread history
 
 ### 7. App shell & thread history

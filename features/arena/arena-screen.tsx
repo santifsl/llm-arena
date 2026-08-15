@@ -101,6 +101,7 @@ export const ArenaScreen = ({
   const [now, setNow] = useState(() => Date.now());
   const [notice, setNotice] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [voting, setVoting] = useState(false);
 
   const liveIds = Object.keys(startedAt);
 
@@ -191,9 +192,20 @@ export const ArenaScreen = ({
    * The winner shows the moment it is picked, and is put back if the write is
    * refused. A vote is one click on something already on screen, so waiting for
    * a round trip to move the border would read as the click not registering.
+   *
+   * A vote already in flight blocks a second one, the same way a retry does. A
+   * double click would otherwise cast the same vote twice, and the second one
+   * loses the race and reports a failure for a vote that is already stored.
+   *
+   * A refusal only takes the winner back when no winner is stored. When the
+   * refusal says one already is, the winner stays and no error is shown,
+   * because the stored state and the screen agree.
    */
   const vote = async (turn: TurnView, answer: AnswerView) => {
+    if (voting) return;
+
     setNotice(null);
+    setVoting(true);
 
     const previousWinner = turn.winnerAnswerId;
 
@@ -205,7 +217,9 @@ export const ArenaScreen = ({
       modelId: answer.modelId,
     });
 
-    if (!result.ok) {
+    setVoting(false);
+
+    if (!result.ok && !result.settled) {
       setThread((previous) => setWinner(previous, turn.id, previousWinner));
       setNotice(result.message);
     }

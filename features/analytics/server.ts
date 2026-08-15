@@ -37,7 +37,11 @@ const createClient = (): PostHog => {
 export const analytics = processSingleton("posthog-node", createClient);
 
 export type ArenaEvent =
-  "prompt_submitted" | "answer_completed" | "answer_failed" | "vote_cast";
+  | "prompt_submitted"
+  | "answer_completed"
+  | "answer_failed"
+  | "vote_cast"
+  | "vote_refused";
 
 /**
  * Captures one event, and never lets analytics break the product. A funnel is

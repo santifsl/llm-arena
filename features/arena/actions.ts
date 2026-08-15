@@ -121,11 +121,27 @@ const VOTE_REFUSALS: Readonly<Record<VoteRefusal, string>> = {
 };
 
 /**
+ * The result of a vote. A refusal carries `settled`: it is true when a winner
+ * is already stored for the turn, so the screen keeps the winner it is showing
+ * rather than taking it back.
+ */
+export type VoteResult =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly message: string;
+      readonly settled: boolean;
+    };
+
+/**
  * Picks the winner of one turn.
  *
  * The rule that two models must have answered is enforced inside the
  * transaction, not here, because that is the one product invariant the database
  * cannot hold on its own and it needs to be counted where the write happens.
+ *
+ * Every refusal is captured with its reason, so a vote that fails shows up in
+ * data rather than only in the server log.
  */
 export const voteForAnswer = async ({
   turnId,
@@ -136,14 +152,29 @@ export const voteForAnswer = async ({
   readonly answerId: string;
   /** For the analytics event only; the vote itself is written by id. */
   readonly modelId: string;
-}): Promise<ActionResult<object>> => {
+}): Promise<VoteResult> => {
   const { userId } = await auth();
 
-  if (!userId) return refuse("Sign in to vote.");
+  if (!userId)
+    return { ok: false, message: "Sign in to vote.", settled: false };
 
   const refusal = await castVote({ clerkUserId: userId, turnId, answerId });
 
-  if (refusal !== null) return refuse(VOTE_REFUSALS[refusal]);
+  if (refusal !== null) {
+    captureArenaEvent(userId, "vote_refused", {
+      turn_id: turnId,
+      answer_id: answerId,
+      model_id: modelId,
+      reason: refusal,
+    });
+
+    // `already-voted` means a winner is stored, so the screen keeps it.
+    return {
+      ok: false,
+      message: VOTE_REFUSALS[refusal],
+      settled: refusal === "already-voted",
+    };
+  }
 
   captureArenaEvent(userId, "vote_cast", {
     turn_id: turnId,
