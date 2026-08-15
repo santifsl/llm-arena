@@ -60,6 +60,10 @@ const toAnswerView = (
       ? "failed"
       : STATE_BY_STATUS[answer.status],
   text: answer.text,
+  // The kind is not stored, so a row read back can only say a failure happened,
+  // not that it was a rate limit. The live lane knows the difference and shows
+  // it; a reload settles for the plain sentence and an immediate retry.
+  failure: answer.status === AnswerStatus.FAILED ? "failed" : null,
   metrics:
     answer.durationMs === null
       ? null

@@ -443,6 +443,14 @@ _Worth keeping in mind for later features._ Both bugs were the same shape: a rea
 
 _The two harnesses went at the end of half B, and one thing had to happen first._ Feature 1 said `/proof` is deleted once the real arena exists and feature 4 said the same about `/design`, and half B is that moment. But feature 4's by-eye check is still open and `/design` is the page it needs, so that check has to be done before the harness is removed, or the box gets closed by deleting its evidence.
 
+**What a Signals report changed, 2026-08-15.** A rate-limited free-tier model could not be recovered by the retry, and half of the failure reasons were being lost to `[object Object]`.
+
+_A retry that fires straight back into a 429 cannot succeed._ A free-tier model returns 429 when it is busy, and the AI SDK has already spent its own three attempts by the time the card goes red. The retry reopened the row and called the provider again with no wait, so a person's only retry was one that failed the same way, which read as a spinner-then-error loop. Failures are now classified into a rate limit or a hard one, and a rate-limited card holds its retry for a short cooldown, counting down on the button, so the retry a person can make is one the limit has had a moment to clear for. A hard failure keeps its immediate retry.
+
+_The failure kind rides the one signal a failed stream carries._ A stream that fails delivers exactly one thing to the browser: the error part's text, which the SDK hands the client as `new Error(errorText)`. So the reader-facing sentence, already chosen per kind on the server, doubles as the carrier, and the settled lane reads the kind back from it. This needs no schema column and no new data part. The trade is that a reload, which reads the row rather than the stream, cannot know the kind, so it settles for the plain sentence and an immediate retry. The live loop the report caught is the one that mattered, and it is a live-session path.
+
+_A non-`Error` reason was being coerced with `String`._ `describe` fell back to `String(error)`, and a plain object stringifies to `[object Object]`. That string was written to the row and shipped as the `answer_failed` reason, which destroys the one diagnostic worth having after launch. It now serializes a non-`Error` as JSON, keeping the provider's own fields, and only coerces a value JSON cannot handle. The rule that a person never sees this reason is unchanged: the card still shows a plain sentence chosen by kind, never the raw text.
+
 ## Slice 2: App shell & thread history
 
 ### 7. App shell & thread history

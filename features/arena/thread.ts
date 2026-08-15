@@ -1,3 +1,4 @@
+import type { FailureKind } from "@/features/model-call/failure";
 import type { CallMetrics } from "@/features/model-call/types";
 
 /**
@@ -18,6 +19,12 @@ export type AnswerView = {
   readonly text: string;
   /** Null until the model call ends, and on a call that never produced one. */
   readonly metrics: CallMetrics | null;
+  /**
+   * Why a failed answer failed, in the one detail the card acts on. Null unless
+   * the state is `failed`. It carries no raw provider text; that stays on the
+   * row for the log.
+   */
+  readonly failure: FailureKind | null;
 };
 
 export type TurnView = {

@@ -1,11 +1,14 @@
 import {
+  APICallError,
   createUIMessageStream,
+  RetryError,
   streamText,
   toUIMessageStream,
   type InferUIMessageChunk,
   type ModelMessage,
 } from "ai";
 
+import { failureMessage, type FailureKind } from "./failure";
 import { toCallMetrics } from "./metrics";
 import { arenaModel } from "./openrouter";
 import {
@@ -17,13 +20,53 @@ import {
 /**
  * A provider can fail in a hundred ugly ways and none of them are the reader's
  * problem. The real error is logged with the model that produced it and kept on
- * the row for whoever reads the log; the person gets one plain sentence.
+ * the row for whoever reads the log; the person gets one plain sentence, chosen
+ * by whether the failure was a temporary rate limit or a hard one.
  */
-const READER_FACING_FAILURE =
-  "This model could not answer. Try again, or send the prompt without it.";
 
-const describe = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
+/**
+ * The honest reason, kept on the row and in analytics.
+ *
+ * A non-`Error` is serialized rather than coerced: `String({...})` is the
+ * `[object Object]` that used to reach the row and destroy the one diagnostic
+ * worth having. `JSON.stringify` keeps the provider's own fields; the fallbacks
+ * cover a value it cannot serialize.
+ */
+const describe = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+
+  try {
+    const json = JSON.stringify(error);
+
+    if (json !== undefined) return json;
+  } catch {
+    // A circular or otherwise unserializable value falls through to String.
+  }
+
+  return String(error);
+};
+
+const RATE_LIMIT_STATUS = 429;
+
+/**
+ * Was this a temporary upstream rate limit rather than a hard failure?
+ *
+ * A free-tier model returns 429 when it is busy, and the SDK wraps that in a
+ * `RetryError` once it has spent its own attempts, so both shapes are unwrapped
+ * here. The text check is the last resort for a provider that reports the limit
+ * as a plain object or a bare message instead.
+ */
+const isRateLimited = (error: unknown): boolean => {
+  if (RetryError.isInstance(error)) return error.errors.some(isRateLimited);
+  if (APICallError.isInstance(error))
+    return error.statusCode === RATE_LIMIT_STATUS;
+
+  return /\b429\b|rate.?limit/i.test(describe(error));
+};
+
+const classify = (error: unknown): FailureKind =>
+  isRateLimited(error) ? "rate-limited" : "failed";
 
 type StreamOptions = {
   readonly modelId: string;
@@ -60,7 +103,9 @@ export const streamModelAnswer = ({
   const onError = (error: unknown): string => {
     console.error(`[arena] model call failed`, { modelId, error });
 
-    return READER_FACING_FAILURE;
+    // The sentence is also how the settled lane learns the kind: the error
+    // part's text is the one thing a failed stream carries to the browser.
+    return failureMessage(classify(error));
   };
 
   return createUIMessageStream<ArenaUIMessage>({
@@ -80,8 +125,9 @@ export const streamModelAnswer = ({
 
           await onComplete(textOf(event.content), metrics);
         },
+        // Persistence only. The log and the reader-facing sentence come from the
+        // shared `onError` above, which the merged stream calls for this error.
         onError: async ({ error }) => {
-          onError(error);
           await onFail(describe(error));
         },
       });
