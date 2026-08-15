@@ -1,10 +1,11 @@
 import { auth } from "@clerk/nextjs/server";
+import { randomUUID } from "node:crypto";
 import { consumeStream, createUIMessageStreamResponse } from "ai";
 
 import {
+  claimAnswerForStream,
   completeAnswer,
   failAnswer,
-  loadStreamContext,
 } from "@/features/arena/queries";
 import { streamRequestSchema } from "@/features/model-call/request";
 import { streamModelAnswer } from "@/features/model-call/stream-model-answer";
@@ -62,22 +63,32 @@ export async function POST(request: Request) {
     );
   }
 
-  const context = await loadStreamContext(parsed.data.answerId, userId);
+  const { answerId } = parsed.data;
+
+  // One stream owns one answer row. Claiming it is the ownership check and the
+  // mutual exclusion at once: a second request for the same answer, from a
+  // duplicate submit or a reconnect, is refused here rather than calling the
+  // provider a second time and racing the first one to write the result.
+  const claimId = randomUUID();
+  const context = await claimAnswerForStream(answerId, userId, claimId);
 
   if (context === null) {
     return Response.json(
-      { error: "That answer is not one this account can stream." },
-      { status: 404 },
+      {
+        error:
+          "That answer is already being written, or is not one this account can stream. Reload the page to see where it got to.",
+      },
+      { status: 409 },
     );
   }
-
-  const { answerId } = parsed.data;
 
   const stream = streamModelAnswer({
     modelId: context.modelId,
     messages: context.messages,
     onComplete: async (text, metrics) => {
-      await completeAnswer(answerId, text, metrics);
+      // A write that no longer holds the claim describes a call the product has
+      // already moved on from, so it is not worth an event either.
+      if (!(await completeAnswer(answerId, claimId, text, metrics))) return;
 
       captureArenaEvent(userId, "answer_completed", {
         answer_id: answerId,
@@ -97,7 +108,7 @@ export async function POST(request: Request) {
       });
     },
     onFail: async (reason) => {
-      await failAnswer(answerId, reason);
+      if (!(await failAnswer(answerId, claimId, reason))) return;
 
       // The reason is kept for the log and for the row. It is a property of an
       // analytics event too, because a model failing is something worth seeing

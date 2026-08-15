@@ -65,6 +65,11 @@ const toAnswerView = (
         },
 });
 
+/** The client handed to a `$transaction` callback. */
+type PrismaTransaction = Parameters<
+  Parameters<ReturnType<typeof database>["$transaction"]>[0]
+>[0];
+
 const turnWithAnswers = {
   answers: { orderBy: { createdAt: "asc" } },
   vote: true,
@@ -91,42 +96,70 @@ export const startTurn = async ({
   readonly modelIds: readonly string[];
 }): Promise<{ readonly thread: ThreadView; readonly turnId: string } | null> =>
   database().$transaction(async (tx) => {
-    const thread =
-      threadId === null
-        ? await tx.thread.create({
-            data: { clerkUserId, title: titleFromPrompt(prompt) },
-          })
-        : await tx.thread.findFirst({ where: { id: threadId, clerkUserId } });
+    if (threadId === null) {
+      const created = await tx.thread.create({
+        data: { clerkUserId, title: titleFromPrompt(prompt) },
+      });
 
-    // Someone else's thread, or one that no longer exists.
-    if (thread === null) return null;
+      return appendTurn(tx, created.id, prompt, modelIds);
+    }
 
-    const turns = await tx.turn.count({ where: { threadId: thread.id } });
+    // The row lock is what makes the turn index safe. Two submissions to the
+    // same thread would otherwise both count the turns before either insert
+    // commits, both pick the same index, and one would then be rejected by the
+    // unique on `(threadId, index)`, which is a valid prompt lost to a race.
+    // Two tabs do it, and so does pressing enter twice quickly, since the
+    // composer's guard is React state that has not re-rendered yet.
+    //
+    // Locking the thread also does the ownership check: a row comes back only
+    // if it is this person's. A brand new thread skips it, because nothing else
+    // can know its id yet.
+    const locked = await tx.$queryRaw<readonly { readonly id: string }[]>`
+      SELECT id FROM "Thread" WHERE id = ${threadId} AND "clerkUserId" = ${clerkUserId} FOR UPDATE
+    `;
 
-    await tx.turn.create({
-      data: {
-        threadId: thread.id,
-        index: turns,
-        prompt,
-        answers: { create: modelIds.map((modelId) => ({ modelId })) },
-      },
-    });
+    if (locked.length === 0) return null;
 
-    // Touched so the sidebar's newest-first list is honest about activity.
-    const updated = await tx.thread.update({
-      where: { id: thread.id },
-      data: { updatedAt: new Date() },
-      include: {
-        turns: { orderBy: { index: "asc" }, include: turnWithAnswers },
-      },
-    });
-
-    return {
-      // Just created, so a streaming row is genuinely streaming.
-      thread: toThreadView(updated, false),
-      turnId: updated.turns[updated.turns.length - 1].id,
-    };
+    return appendTurn(tx, threadId, prompt, modelIds);
   });
+
+/**
+ * Writes the turn and its answer rows, and returns the whole thread. Only ever
+ * called with the thread's row already locked, or on a thread nobody else can
+ * have heard of yet.
+ */
+const appendTurn = async (
+  tx: PrismaTransaction,
+  threadId: string,
+  prompt: string,
+  modelIds: readonly string[],
+): Promise<{ readonly thread: ThreadView; readonly turnId: string }> => {
+  const turns = await tx.turn.count({ where: { threadId } });
+
+  await tx.turn.create({
+    data: {
+      threadId,
+      index: turns,
+      prompt,
+      answers: { create: modelIds.map((modelId) => ({ modelId })) },
+    },
+  });
+
+  // Touched so the sidebar's newest-first list is honest about activity.
+  const updated = await tx.thread.update({
+    where: { id: threadId },
+    data: { updatedAt: new Date() },
+    include: {
+      turns: { orderBy: { index: "asc" }, include: turnWithAnswers },
+    },
+  });
+
+  return {
+    // Just created, so a streaming row is genuinely streaming.
+    thread: toThreadView(updated, false),
+    turnId: updated.turns[updated.turns.length - 1].id,
+  };
+};
 
 type ThreadWithTurns = Prisma.ThreadGetPayload<{
   include: { turns: { include: typeof turnWithAnswers } };
@@ -173,13 +206,31 @@ export const loadThread = async (
  * model failed contributes only the prompt, which is the truth of what that
  * model has seen.
  */
-export const loadStreamContext = async (
+export const claimAnswerForStream = async (
   answerId: string,
   clerkUserId: string,
+  claimId: string,
 ): Promise<{
   readonly modelId: string;
   readonly messages: readonly ModelMessage[];
 } | null> => {
+  // The claim is the ownership check and the mutual exclusion in one statement.
+  // Only one request can move `streamClaimId` off null, so only one can go on
+  // to call the provider, and a second request naming the same answer is
+  // refused before it costs anything. The row must also still be `STREAMING`:
+  // an answer that already finished is not something to answer again.
+  const { count } = await database().answer.updateMany({
+    where: {
+      id: answerId,
+      status: AnswerStatus.STREAMING,
+      streamClaimId: null,
+      turn: { thread: { clerkUserId } },
+    },
+    data: { streamClaimId: claimId },
+  });
+
+  if (count === 0) return null;
+
   const answer = await database().answer.findFirst({
     where: { id: answerId, turn: { thread: { clerkUserId } } },
     include: {
@@ -218,15 +269,25 @@ export const loadStreamContext = async (
   return { modelId: answer.modelId, messages };
 };
 
-/** The model answered. Text and every measured number land in one write. */
+/**
+ * The model answered. Text and every measured number land in one write.
+ *
+ * Conditional on still holding the claim, and that is the whole point: a call
+ * abandoned by a retry finishes eventually and tries to write too, and this is
+ * what makes that write land nowhere instead of overwriting the retry's answer
+ * with a stale one. Returns whether it applied, so the caller knows whether it
+ * is describing something that actually happened.
+ */
 export const completeAnswer = async (
   answerId: string,
+  claimId: string,
   text: string,
   metrics: CallMetrics,
-): Promise<void> => {
-  await database().answer.update({
-    where: { id: answerId },
+): Promise<boolean> => {
+  const { count } = await database().answer.updateMany({
+    where: { id: answerId, streamClaimId: claimId },
     data: {
+      streamClaimId: null,
       status: AnswerStatus.COMPLETE,
       text,
       timeToFirstTokenMs: metrics.timeToFirstTokenMs,
@@ -238,6 +299,8 @@ export const completeAnswer = async (
       costUsd: metrics.costUsd,
     },
   });
+
+  return count > 0;
 };
 
 /**
@@ -246,12 +309,15 @@ export const completeAnswer = async (
  */
 export const failAnswer = async (
   answerId: string,
+  claimId: string,
   failureReason: string,
-): Promise<void> => {
-  await database().answer.update({
-    where: { id: answerId },
-    data: { status: AnswerStatus.FAILED, failureReason },
+): Promise<boolean> => {
+  const { count } = await database().answer.updateMany({
+    where: { id: answerId, streamClaimId: claimId },
+    data: { streamClaimId: null, status: AnswerStatus.FAILED, failureReason },
   });
+
+  return count > 0;
 };
 
 export type VoteRefusal =
@@ -349,6 +415,9 @@ export const reopenAnswer = async (
     where: { id: answerId },
     data: {
       status: AnswerStatus.STREAMING,
+      // Clearing the claim is what releases the row to the retry. Any call
+      // still running against the old claim can no longer write to it.
+      streamClaimId: null,
       text: "",
       failureReason: null,
       timeToFirstTokenMs: null,

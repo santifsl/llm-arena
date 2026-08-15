@@ -81,6 +81,17 @@ model Answer {
   /// failure is a plain sentence with a retry.
   failureReason String?
 
+  /// Which stream currently owns this row, if any.
+  ///
+  /// One answer is written by exactly one model call. Two requests naming the
+  /// same answer would otherwise both pass the ownership check, both call the
+  /// provider, and both write here, so a stale call could overwrite a retry's
+  /// result. A stream claims the row by moving this from null to its own id,
+  /// which only one of them can do, and every terminal write is conditional on
+  /// still holding it. Retrying clears it, which is what makes a late write
+  /// from the abandoned call a no-op rather than a corruption.
+  streamClaimId String?
+
   timeToFirstTokenMs Int?
   tokensPerSecond    Float?
   inputTokens        Int?
