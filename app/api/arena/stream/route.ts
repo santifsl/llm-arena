@@ -1,27 +1,34 @@
 import { auth } from "@clerk/nextjs/server";
-import { createUIMessageStreamResponse } from "ai";
+import { randomUUID } from "node:crypto";
+import { consumeStream, createUIMessageStreamResponse } from "ai";
 
 import {
-  latestUserPrompt,
-  streamRequestSchema,
-} from "@/features/model-call/request";
+  claimAnswerForStream,
+  completeAnswer,
+  failAnswer,
+} from "@/features/arena/queries";
+import { streamRequestSchema } from "@/features/model-call/request";
 import { streamModelAnswer } from "@/features/model-call/stream-model-answer";
+import {
+  captureArenaEvent,
+  captureModelCall,
+} from "@/features/analytics/server";
 import { protectArenaStream } from "@/features/security/arcjet";
 
 /**
- * One model per request. The browser opens one of these per selected model so
- * a slow or dead model can only ever affect its own answer.
+ * One answer row per request. The browser opens one of these per selected model
+ * so a slow or dead model can only ever affect its own answer.
  *
- * The order here matters: identify, validate, then protect, and only then call
- * a model. Sending a prompt costs real quota, so nothing reaches OpenRouter
- * until Arcjet has allowed it.
+ * The order here matters: identify, validate, protect, and only then load the
+ * row. Loading it is also the ownership check, since the query filters on the
+ * caller's own threads, so streaming into somebody else's thread is impossible
+ * rather than merely refused.
  *
- * This route is deliberately the thin HTTP edge. Persistence and voting belong
- * to their own features.
+ * This route is deliberately the thin HTTP edge. What gets written belongs to
+ * the arena's queries, and the budget belongs to the action that sent the
+ * prompt in the first place.
  */
 export async function POST(request: Request) {
-  // Arcjet's budget is per person, so an anonymous caller has no bucket to
-  // charge and is refused before anything else happens.
   const { userId } = await auth();
 
   if (!userId) {
@@ -31,8 +38,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const body = await request.json().catch(() => null);
-  const parsed = streamRequestSchema.safeParse(body);
+  const parsed = streamRequestSchema.safeParse(
+    await request.json().catch(() => null),
+  );
 
   if (!parsed.success) {
     return Response.json(
@@ -41,10 +49,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const denial = await protectArenaStream(request, {
-    userId,
-    prompt: latestUserPrompt(parsed.data.messages),
-  });
+  const denial = await protectArenaStream(request);
 
   if (denial) {
     return Response.json(
@@ -58,7 +63,77 @@ export async function POST(request: Request) {
     );
   }
 
+  const { answerId } = parsed.data;
+
+  // One stream owns one answer row. Claiming it is the ownership check and the
+  // mutual exclusion at once: a second request for the same answer, from a
+  // duplicate submit or a reconnect, is refused here rather than calling the
+  // provider a second time and racing the first one to write the result.
+  const claimId = randomUUID();
+  const context = await claimAnswerForStream(answerId, userId, claimId);
+
+  if (context === null) {
+    return Response.json(
+      {
+        error:
+          "That answer is already being written, or is not one this account can stream. Reload the page to see where it got to.",
+      },
+      { status: 409 },
+    );
+  }
+
+  const stream = streamModelAnswer({
+    modelId: context.modelId,
+    messages: context.messages,
+    onComplete: async (text, metrics) => {
+      // A write that no longer holds the claim describes a call the product has
+      // already moved on from, so it is not worth an event either.
+      if (!(await completeAnswer(answerId, claimId, text, metrics))) return;
+
+      captureArenaEvent(userId, "answer_completed", {
+        answer_id: answerId,
+        model_id: context.modelId,
+        ...metrics,
+      });
+
+      // PostHog's own LLM analytics, which is a different thing from the
+      // funnel: tokens, cost, and latency for this one call.
+      await captureModelCall({
+        distinctId: userId,
+        answerId,
+        modelId: context.modelId,
+        input: context.messages,
+        output: text,
+        metrics,
+      });
+    },
+    onFail: async (reason) => {
+      if (!(await failAnswer(answerId, claimId, reason))) return;
+
+      // The reason is kept for the log and for the row. It is a property of an
+      // analytics event too, because a model failing is something worth seeing
+      // a trend in, and nobody reading a funnel is a reader of the product.
+      captureArenaEvent(userId, "answer_failed", {
+        answer_id: answerId,
+        model_id: context.modelId,
+        reason,
+      });
+
+      await captureModelCall({
+        distinctId: userId,
+        answerId,
+        modelId: context.modelId,
+        input: context.messages,
+        output: null,
+        error: reason,
+      });
+    },
+  });
+
   return createUIMessageStreamResponse({
-    stream: streamModelAnswer(parsed.data),
+    stream,
+    // A closed tab must not leave a half-written row behind: the server keeps
+    // draining its own copy of the stream, so the answer still lands.
+    consumeSseStream: ({ stream: sse }) => consumeStream({ stream: sse }),
   });
 }

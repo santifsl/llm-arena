@@ -81,6 +81,25 @@ model Answer {
   /// failure is a plain sentence with a retry.
   failureReason String?
 
+  /// Which stream currently owns this row, if any.
+  ///
+  /// One answer is written by exactly one model call. Two requests naming the
+  /// same answer would otherwise both pass the ownership check, both call the
+  /// provider, and both write here, so a stale call could overwrite a retry's
+  /// result. A stream claims the row by moving this from null to its own id,
+  /// which only one of them can do, and every terminal write is conditional on
+  /// still holding it. Retrying clears it, which is what makes a late write
+  /// from the abandoned call a no-op rather than a corruption.
+  ///
+  /// A claim whose process died is released by nothing, so a claim on a row
+  /// that is still `STREAMING` and has not been written to for longer than the
+  /// enforced model-call timeout plus a margin can be taken over. `updatedAt` is
+  /// the claim's own timestamp, since nothing writes to the row while it
+  /// streams, and the timeout is what makes a claim that old mean a dead call
+  /// rather than a slow one. Both numbers live in `features/model-call/types.ts`
+  /// and `features/arena/queries.ts`.
+  streamClaimId String?
+
   timeToFirstTokenMs Int?
   tokensPerSecond    Float?
   inputTokens        Int?

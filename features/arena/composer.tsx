@@ -4,41 +4,67 @@ import { ArrowUp, Plus, X } from "lucide-react";
 import { useState } from "react";
 
 import { ModelBadge } from "@/components/model-badge";
+import { posthog } from "@/features/analytics/posthog";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
-  PLACEHOLDER_MODELS,
-  findPlaceholderModel,
-} from "@/features/placeholder/data";
-
-export const MAX_MODELS = 3;
+  MAX_SELECTED_MODELS,
+  findArenaModel,
+  type ArenaModel,
+} from "@/features/models/catalog";
+import { formatContextTokens } from "@/features/models/format";
 
 type ComposerProps = {
+  /** The live free-tier catalog, fetched on the server and passed down. */
+  readonly models: readonly ArenaModel[];
   readonly selectedModelIds: readonly string[];
+  /** True while models are still answering, which is when nothing may be sent. */
+  readonly busy: boolean;
+  /** Resolves true when the prompt was accepted, which is when the box clears. */
+  readonly onSubmit: (prompt: string) => Promise<boolean>;
   readonly onAdd: (modelId: string) => void;
   readonly onRemove: (modelId: string) => void;
 };
 
 export const Composer = ({
+  models,
   selectedModelIds,
+  busy,
+  onSubmit,
   onAdd,
   onRemove,
 }: ComposerProps) => {
   const [prompt, setPrompt] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [sending, setSending] = useState(false);
 
-  const full = selectedModelIds.length >= MAX_MODELS;
-  const unselected = PLACEHOLDER_MODELS.filter(
+  const ready = prompt.trim() !== "" && selectedModelIds.length > 0;
+  const blocked = busy || sending;
+
+  const send = async () => {
+    if (!ready || blocked) return;
+
+    setSending(true);
+    const accepted = await onSubmit(prompt);
+    setSending(false);
+
+    if (accepted) setPrompt("");
+  };
+
+  const full = selectedModelIds.length >= MAX_SELECTED_MODELS;
+  const unselected = models.filter(
     (model) => !selectedModelIds.includes(model.id),
   );
 
   return (
     <form
-      // Nothing is sent yet; feature 6 owns what this does.
-      onSubmit={(event) => event.preventDefault()}
+      onSubmit={(event) => {
+        event.preventDefault();
+        void send();
+      }}
       className="rounded-sm border border-rule bg-surface focus-within:border-rust"
     >
       <label htmlFor="prompt" className="sr-only">
@@ -49,6 +75,11 @@ export const Composer = ({
         rows={3}
         value={prompt}
         onChange={(event) => setPrompt(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.shiftKey) return;
+          event.preventDefault();
+          void send();
+        }}
         placeholder="Ask anything. Enter to send, shift + enter for a new line."
         className="w-full resize-none bg-transparent px-3 py-3 text-sm outline-none placeholder:text-ink-dim"
       />
@@ -56,7 +87,7 @@ export const Composer = ({
       <div className="flex flex-wrap items-center gap-2 border-t border-rule px-3 py-2.5">
         <ul className="flex flex-wrap items-center gap-2">
           {selectedModelIds.map((modelId) => {
-            const model = findPlaceholderModel(modelId);
+            const model = findArenaModel(models, modelId);
             if (model === undefined) return null;
             return (
               <li key={modelId}>
@@ -91,25 +122,40 @@ export const Composer = ({
               Add model
             </button>
           </PopoverTrigger>
-          <PopoverContent align="start" className="w-72 p-1">
-            <p className="eyebrow px-2 py-1.5">Free models</p>
-            <ul className="flex flex-col">
+          <PopoverContent align="start" className="w-76 p-1">
+            <p className="eyebrow px-2 py-1.5">
+              Free models, widest context first
+            </p>
+            {/* The free tier runs to fifteen models, most of them from one
+                vendor, so the list scrolls and every row names its vendor. */}
+            <ul className="flex max-h-72 flex-col overflow-y-auto">
               {unselected.map((model) => (
                 <li key={model.id}>
                   <button
                     type="button"
                     onClick={() => {
+                      // The one event in the funnel that never reaches a
+                      // server: choosing a model happens entirely in the
+                      // browser, so it is captured where it happens.
+                      posthog.capture("model_selected", {
+                        model_id: model.id,
+                        vendor: model.vendor,
+                        context_tokens: model.contextTokens,
+                      });
                       onAdd(model.id);
                       setPickerOpen(false);
                     }}
                     className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left text-sm hover:bg-surface-raised"
                   >
                     <ModelBadge initial={model.initial} size="sm" />
-                    <span className="min-w-0 flex-1 truncate">
-                      {model.name}
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">{model.name}</span>
+                      <span className="truncate text-[0.625rem] text-ink-dim">
+                        {model.vendor}
+                      </span>
                     </span>
                     <span className="numeral shrink-0 text-[0.625rem] text-ink-dim">
-                      {Math.round(model.contextTokens / 1000)}k
+                      {formatContextTokens(model.contextTokens)}
                     </span>
                   </button>
                 </li>
@@ -125,8 +171,9 @@ export const Composer = ({
 
         <button
           type="submit"
-          disabled={prompt.trim() === "" || selectedModelIds.length === 0}
+          disabled={!ready || blocked}
           aria-label="Send the prompt"
+          title={busy ? "Wait for the models to finish answering." : undefined}
           className="ml-auto flex size-9 items-center justify-center rounded-sm bg-rust text-rust-ink hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <ArrowUp className="size-4" aria-hidden />

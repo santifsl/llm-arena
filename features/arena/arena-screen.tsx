@@ -1,25 +1,46 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { ModelRecord } from "@/features/arena/model-record";
 import { AnswerCard } from "@/features/arena/answer-card";
-import { Composer, MAX_MODELS } from "@/features/arena/composer";
+import { Composer } from "@/features/arena/composer";
+import { LiveAnswer } from "@/features/arena/live-answer";
+import { ModelRecord } from "@/features/arena/model-record";
 import {
-  PLACEHOLDER_SELECTED_MODEL_IDS,
-  PLACEHOLDER_THREAD_NAME,
-  PLACEHOLDER_TURNS,
-  findPlaceholderModel,
-  type PlaceholderTurn,
-} from "@/features/placeholder/data";
+  retryModel,
+  submitPrompt,
+  voteForAnswer,
+} from "@/features/arena/actions";
+import {
+  completedAnswerCount,
+  currentModelIds,
+  type AnswerView,
+  type ThreadView,
+  type TurnView,
+} from "@/features/arena/thread";
+import {
+  MAX_SELECTED_MODELS,
+  defaultSelectedModelIds,
+  findArenaModel,
+  type ArenaModel,
+} from "@/features/models/catalog";
+import { CatalogUnavailable } from "@/features/models/catalog-unavailable";
 import { TopBar } from "@/features/shell/top-bar";
 import { cn } from "@/lib/utils";
 
 /**
- * The arena, as a screen only. Nothing here reaches a model, a database, or a
- * vote: the answers come from `features/placeholder`, and picking a winner
- * moves local state and nothing else. Features 5 and 6 replace the data and the
- * actions; the layout, the states, and the copy are what is being built here.
+ * The arena: one prompt, up to three models answering at once.
+ *
+ * The same screen serves a brand new thread and an existing one. A new thread
+ * gets its URL the moment it exists, by replacing the address rather than
+ * navigating, because navigating would unmount the streams that were just
+ * started. A reload after that renders the thread from the database instead.
+ *
+ * This component owns the clock, exactly as the design intended: it ticks while
+ * anything is still answering, and every trace is a pure function of the
+ * elapsed time it is handed. Each lane owns its own stream and reports its
+ * finished answer back once, so a model streaming does not re-render the thread
+ * around it.
  */
 
 const COLUMNS: Readonly<Record<number, string>> = {
@@ -28,42 +49,254 @@ const COLUMNS: Readonly<Record<number, string>> = {
   3: "lg:grid-cols-3",
 };
 
-const countDone = (turn: PlaceholderTurn): number =>
-  turn.answers.filter((answer) => answer.state === "done").length;
+const CLOCK_INTERVAL_MS = 100;
 
-const scaleFor = (turn: PlaceholderTurn): number =>
-  Math.max(...turn.answers.map((answer) => answer.durationMs), 1);
+const setWinner = (
+  thread: ThreadView | null,
+  turnId: string,
+  winnerAnswerId: string | null,
+): ThreadView | null =>
+  thread === null
+    ? thread
+    : {
+        ...thread,
+        turns: thread.turns.map((turn) =>
+          turn.id === turnId ? { ...turn, winnerAnswerId } : turn,
+        ),
+      };
 
-export const ArenaScreen = () => {
-  const [selectedModelIds, setSelectedModelIds] = useState<readonly string[]>(
-    PLACEHOLDER_SELECTED_MODEL_IDS,
-  );
-  const [winners, setWinners] = useState<
-    Readonly<Record<string, string | null>>
-  >(() =>
-    Object.fromEntries(
-      PLACEHOLDER_TURNS.map((turn) => [turn.id, turn.winnerModelId]),
+const replaceAnswer = (
+  thread: ThreadView,
+  answerId: string,
+  next: AnswerView,
+): ThreadView => ({
+  ...thread,
+  turns: thread.turns.map((turn) => ({
+    ...turn,
+    answers: turn.answers.map((answer) =>
+      answer.id === answerId ? next : answer,
     ),
+  })),
+});
+
+export const ArenaScreen = ({
+  catalog,
+  initialThread,
+}: {
+  readonly catalog: readonly ArenaModel[] | null;
+  readonly initialThread: ThreadView | null;
+}) => {
+  const models = catalog ?? [];
+  const [thread, setThread] = useState<ThreadView | null>(initialThread);
+  const [selectedModelIds, setSelectedModelIds] = useState<readonly string[]>(
+    () =>
+      initialThread === null
+        ? defaultSelectedModelIds(models)
+        : currentModelIds(initialThread),
   );
+  /** Answer ids this session started, and when each one started. */
+  const [startedAt, setStartedAt] = useState<Readonly<Record<string, number>>>(
+    {},
+  );
+  const [now, setNow] = useState(() => Date.now());
+  const [notice, setNotice] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
-  const votedTurns = Object.values(winners).filter(
-    (winner) => winner !== null,
-  ).length;
+  const liveIds = Object.keys(startedAt);
 
-  const records = selectedModelIds.map((modelId) => {
-    const model = findPlaceholderModel(modelId);
-    const won = Object.values(winners).filter(
-      (winner) => winner === modelId,
-    ).length;
-    return { modelId, model, won };
-  });
+  useEffect(() => {
+    if (liveIds.length === 0) return;
+
+    const clock = setInterval(() => setNow(Date.now()), CLOCK_INTERVAL_MS);
+
+    return () => clearInterval(clock);
+  }, [liveIds.length]);
+
+  const elapsedFor = (answer: AnswerView): number => {
+    if (answer.metrics !== null) return answer.metrics.durationMs;
+
+    const started = startedAt[answer.id];
+
+    return started === undefined ? 0 : Math.max(0, now - started);
+  };
+
+  const settle = useCallback((answerId: string, settled: AnswerView) => {
+    setThread((previous) =>
+      previous === null ? previous : replaceAnswer(previous, answerId, settled),
+    );
+    setStartedAt((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([id]) => id !== answerId),
+      ),
+    );
+  }, []);
+
+  const send = async (prompt: string): Promise<boolean> => {
+    setNotice(null);
+
+    const result = await submitPrompt({
+      threadId: thread?.id ?? null,
+      prompt,
+      modelIds: selectedModelIds,
+    });
+
+    if (!result.ok) {
+      setNotice(result.message);
+      return false;
+    }
+
+    const turn = result.thread.turns.at(-1);
+
+    if (turn === undefined) return false;
+
+    // Replacing rather than navigating: the thread gets its shareable URL and
+    // the streams about to start are not torn down by a route change.
+    if (thread === null) {
+      window.history.replaceState(null, "", `/t/${result.thread.id}`);
+    }
+
+    const startedNow = Date.now();
+
+    setThread(result.thread);
+    setStartedAt((previous) => ({
+      ...previous,
+      ...Object.fromEntries(turn.answers.map(({ id }) => [id, startedNow])),
+    }));
+
+    return true;
+  };
+
+  const retry = async (answer: AnswerView) => {
+    setNotice(null);
+    setRetryingId(answer.id);
+
+    const result = await retryModel(answer.id);
+
+    setRetryingId(null);
+
+    if (!result.ok) {
+      setNotice(result.message);
+      return;
+    }
+
+    setThread((previous) =>
+      previous === null
+        ? previous
+        : replaceAnswer(previous, answer.id, result.answer),
+    );
+    setStartedAt((previous) => ({ ...previous, [answer.id]: Date.now() }));
+  };
+
+  /**
+   * The winner shows the moment it is picked, and is put back if the write is
+   * refused. A vote is one click on something already on screen, so waiting for
+   * a round trip to move the border would read as the click not registering.
+   */
+  const vote = async (turn: TurnView, answer: AnswerView) => {
+    setNotice(null);
+
+    const previousWinner = turn.winnerAnswerId;
+
+    setThread((previous) => setWinner(previous, turn.id, answer.id));
+
+    const result = await voteForAnswer({
+      turnId: turn.id,
+      answerId: answer.id,
+      modelId: answer.modelId,
+    });
+
+    if (!result.ok) {
+      setThread((previous) => setWinner(previous, turn.id, previousWinner));
+      setNotice(result.message);
+    }
+  };
+
+  const votedTurns =
+    thread?.turns.filter((turn) => turn.winnerAnswerId !== null).length ?? 0;
+
+  const winsFor = (modelId: string): number =>
+    thread?.turns.filter((turn) =>
+      turn.answers.some(
+        (answer) =>
+          answer.id === turn.winnerAnswerId && answer.modelId === modelId,
+      ),
+    ).length ?? 0;
+
+  const records = selectedModelIds.map((modelId) => ({
+    modelId,
+    model: findArenaModel(models, modelId),
+    won: winsFor(modelId),
+  }));
 
   const bestWins = Math.max(0, ...records.map((record) => record.won));
+
+  const renderTurn = (turn: TurnView) => {
+    const canVote = completedAnswerCount(turn) >= 2;
+    const scaleMs = Math.max(1, ...turn.answers.map(elapsedFor));
+    const columns = COLUMNS[turn.answers.length] ?? COLUMNS[3];
+
+    return (
+      <section key={turn.id} className="flex flex-col gap-4">
+        <div className="flex justify-end">
+          <p className="max-w-2xl rounded-sm border border-rule bg-surface-raised px-3 py-2 text-sm">
+            {turn.prompt}
+          </p>
+        </div>
+
+        <div className={cn("grid gap-4 sm:grid-cols-2", columns)}>
+          {turn.answers.map((answer) => {
+            const model = findArenaModel(models, answer.modelId);
+
+            if (model === undefined) return null;
+
+            return startedAt[answer.id] === undefined ? (
+              <AnswerCard
+                key={answer.id}
+                answer={answer}
+                model={model}
+                scaleMs={scaleMs}
+                elapsedMs={elapsedFor(answer)}
+                isWinner={turn.winnerAnswerId === answer.id}
+                canVote={canVote && turn.winnerAnswerId === null}
+                onPick={
+                  answer.state === "complete"
+                    ? () => void vote(turn, answer)
+                    : undefined
+                }
+                onRetry={
+                  answer.state === "failed"
+                    ? () => void retry(answer)
+                    : undefined
+                }
+                retrying={retryingId === answer.id}
+              />
+            ) : (
+              <LiveAnswer
+                key={answer.id}
+                answer={answer}
+                model={model}
+                prompt={turn.prompt}
+                scaleMs={scaleMs}
+                elapsedMs={elapsedFor(answer)}
+                onSettled={settle}
+              />
+            );
+          })}
+        </div>
+
+        {!canVote && (
+          <p className="text-xs text-ink-dim">
+            Two models have to answer before a vote means anything.
+          </p>
+        )}
+      </section>
+    );
+  };
 
   return (
     <>
       <TopBar
-        breadcrumb={["Arena", PLACEHOLDER_THREAD_NAME]}
+        breadcrumb={["Arena", thread?.title ?? "New thread"]}
         trailing={records.map(({ modelId, model, won }) =>
           model === undefined ? null : (
             <ModelRecord
@@ -79,7 +312,11 @@ export const ArenaScreen = () => {
       />
 
       <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-12 px-4 py-8">
-        {PLACEHOLDER_TURNS.length === 0 ? (
+        {catalog === null ? (
+          <div className="flex flex-1 flex-col items-center justify-center text-center">
+            <CatalogUnavailable />
+          </div>
+        ) : thread === null ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
             <h1 className="signage text-2xl">Ask three models at once</h1>
             <p className="max-w-md text-sm text-ink-dim">
@@ -88,72 +325,39 @@ export const ArenaScreen = () => {
             </p>
           </div>
         ) : (
-          PLACEHOLDER_TURNS.map((turn) => {
-            const canVote = countDone(turn) >= 2;
-            const scaleMs = scaleFor(turn);
-            const columns = COLUMNS[turn.answers.length] ?? COLUMNS[3];
-
-            return (
-              <section key={turn.id} className="flex flex-col gap-4">
-                <div className="flex justify-end">
-                  <p className="max-w-2xl rounded-sm border border-rule bg-surface-raised px-3 py-2 text-sm">
-                    {turn.prompt}
-                  </p>
-                </div>
-
-                <div className={cn("grid gap-4 sm:grid-cols-2", columns)}>
-                  {turn.answers.map((answer) => {
-                    const model = findPlaceholderModel(answer.modelId);
-                    if (model === undefined) return null;
-                    return (
-                      <AnswerCard
-                        key={answer.modelId}
-                        answer={answer}
-                        model={model}
-                        scaleMs={scaleMs}
-                        isWinner={winners[turn.id] === answer.modelId}
-                        canVote={canVote}
-                        onPick={() =>
-                          setWinners((previous) => ({
-                            ...previous,
-                            [turn.id]: answer.modelId,
-                          }))
-                        }
-                      />
-                    );
-                  })}
-                </div>
-
-                {!canVote && (
-                  <p className="text-xs text-ink-dim">
-                    Two models have to answer before a vote means anything.
-                  </p>
-                )}
-              </section>
-            );
-          })
+          thread.turns.map(renderTurn)
         )}
       </div>
 
-      <div className="sticky bottom-0 border-t border-rule bg-ground px-4 py-4">
-        <div className="mx-auto w-full max-w-7xl">
-          <Composer
-            selectedModelIds={selectedModelIds}
-            onAdd={(modelId) =>
-              setSelectedModelIds((previous) =>
-                previous.length >= MAX_MODELS
-                  ? previous
-                  : [...previous, modelId],
-              )
-            }
-            onRemove={(modelId) =>
-              setSelectedModelIds((previous) =>
-                previous.filter((id) => id !== modelId),
-              )
-            }
-          />
+      {catalog !== null && (
+        <div className="sticky bottom-0 border-t border-rule bg-ground px-4 py-4">
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-2">
+            {notice !== null && (
+              <p role="alert" className="text-sm text-fail">
+                {notice}
+              </p>
+            )}
+            <Composer
+              models={catalog}
+              selectedModelIds={selectedModelIds}
+              busy={liveIds.length > 0}
+              onSubmit={send}
+              onAdd={(modelId) =>
+                setSelectedModelIds((previous) =>
+                  previous.length >= MAX_SELECTED_MODELS
+                    ? previous
+                    : [...previous, modelId],
+                )
+              }
+              onRemove={(modelId) =>
+                setSelectedModelIds((previous) =>
+                  previous.filter((id) => id !== modelId),
+                )
+              }
+            />
+          </div>
         </div>
-      </div>
+      )}
     </>
   );
 };
