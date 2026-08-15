@@ -90,9 +90,9 @@ export const ArenaScreen = ({
   const [thread, setThread] = useState<ThreadView | null>(initialThread);
   const [selectedModelIds, setSelectedModelIds] = useState<readonly string[]>(
     () =>
-      initialThread === null
+      thread === null
         ? defaultSelectedModelIds(models)
-        : currentModelIds(initialThread),
+        : currentModelIds(thread),
   );
   /** Answer ids this session started, and when each one started. */
   const [startedAt, setStartedAt] = useState<Readonly<Record<string, number>>>(

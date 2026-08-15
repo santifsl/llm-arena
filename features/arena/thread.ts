@@ -35,9 +35,16 @@ export type ThreadView = {
   readonly turns: readonly TurnView[];
 };
 
-/** Which models a thread is currently racing: whoever answered the last turn. */
+/**
+ * Which models a thread is currently racing: whoever answered the last turn.
+ *
+ * The `turns` array itself is guarded, not only its last entry. The type marks
+ * `turns` as always present. A half-formed thread on the client can still hand
+ * over an absent `turns`, and `.at` on it throws and white-screens the arena.
+ * An absent or empty list means no selection, so the result is empty.
+ */
 export const currentModelIds = (thread: ThreadView): readonly string[] =>
-  thread.turns.at(-1)?.answers.map((answer) => answer.modelId) ?? [];
+  (thread.turns ?? []).at(-1)?.answers.map((answer) => answer.modelId) ?? [];
 
 /** A turn is votable once two of its models have actually answered. */
 export const completedAnswerCount = (turn: TurnView): number =>
