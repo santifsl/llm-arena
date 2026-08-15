@@ -5,36 +5,45 @@ import { useState } from "react";
 
 import { ModelBadge } from "@/components/model-badge";
 import { Trace } from "@/components/trace";
-import type {
-  PlaceholderAnswer,
-  PlaceholderModel,
-} from "@/features/placeholder/data";
+import type { AnswerView } from "@/features/arena/thread";
+import type { ArenaModel } from "@/features/models/catalog";
 import { cn } from "@/lib/utils";
 
 type AnswerCardProps = {
-  readonly answer: PlaceholderAnswer;
-  readonly model: PlaceholderModel;
-  /** The slowest answer in this turn, so all three traces share a scale. */
+  readonly answer: AnswerView;
+  readonly model: ArenaModel;
+  /** The slowest answer in this turn, so every trace shares one scale. */
   readonly scaleMs: number;
-  readonly isWinner: boolean;
-  /** A turn needs two or more answers before a vote means anything. */
-  readonly canVote: boolean;
-  readonly onPick: () => void;
+  /** Time so far while streaming, total time once the call has ended. */
+  readonly elapsedMs: number;
+  readonly isWinner?: boolean;
+  /** A turn needs two answers before a vote means anything. */
+  readonly canVote?: boolean;
+  /** Absent when this answer cannot be the winner. */
+  readonly onPick?: () => void;
+  readonly onRetry?: () => void;
+  readonly retrying?: boolean;
 };
 
 const formatMs = (ms: number): string =>
   ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 
+const EM_DASH = "—";
+
 export const AnswerCard = ({
   answer,
   model,
   scaleMs,
-  isWinner,
-  canVote,
+  elapsedMs,
+  isWinner = false,
+  canVote = false,
   onPick,
+  onRetry,
+  retrying = false,
 }: AnswerCardProps) => {
   const [metricsOpen, setMetricsOpen] = useState(false);
   const failed = answer.state === "failed";
+  const { metrics } = answer;
 
   return (
     <article
@@ -58,13 +67,15 @@ export const AnswerCard = ({
           <button
             type="button"
             onClick={onPick}
-            disabled={!canVote || failed}
+            disabled={onPick === undefined || !canVote || failed}
             title={
               failed
                 ? "This model didn't answer, so it can't win."
-                : canVote
-                  ? undefined
-                  : "Two models have to answer before you can pick a winner."
+                : onPick === undefined
+                  ? "This model has not finished answering yet."
+                  : canVote
+                    ? undefined
+                    : "Two models have to answer before you can pick a winner."
             }
             className="shrink-0 rounded-sm border border-rule px-2 py-1 text-xs text-ink-dim hover:border-rust hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-rule disabled:hover:text-ink-dim"
           >
@@ -76,10 +87,16 @@ export const AnswerCard = ({
       <div className="px-3">
         <Trace
           modelName={model.name}
-          elapsedMs={answer.durationMs}
-          firstTokenMs={answer.firstTokenMs}
+          elapsedMs={elapsedMs}
+          firstTokenMs={metrics?.timeToFirstTokenMs ?? null}
           scaleMs={scaleMs}
-          state={answer.state}
+          state={
+            answer.state === "complete"
+              ? "done"
+              : answer.state === "failed"
+                ? "failed"
+                : "streaming"
+          }
         />
       </div>
 
@@ -90,13 +107,17 @@ export const AnswerCard = ({
               <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
               This model didn&apos;t answer. The other answers are unaffected.
             </p>
-            <button
-              type="button"
-              className="inline-flex items-center gap-1.5 rounded-sm border border-rule px-2 py-1 text-xs text-ink hover:border-rust"
-            >
-              <RotateCw className="size-3.5" aria-hidden />
-              Try this model again
-            </button>
+            {onRetry !== undefined && (
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={retrying}
+                className="inline-flex items-center gap-1.5 rounded-sm border border-rule px-2 py-1 text-xs text-ink hover:border-rust disabled:opacity-40"
+              >
+                <RotateCw className="size-3.5" aria-hidden />
+                {retrying ? "Starting" : "Try this model again"}
+              </button>
+            )}
           </div>
         ) : (
           <p className="answer-prose">
@@ -133,22 +154,24 @@ export const AnswerCard = ({
             <div>
               <dt className="eyebrow">To first token</dt>
               <dd className="numeral text-sm">
-                {answer.firstTokenMs === null
-                  ? "—"
-                  : formatMs(answer.firstTokenMs)}
+                {metrics?.timeToFirstTokenMs == null
+                  ? EM_DASH
+                  : formatMs(metrics.timeToFirstTokenMs)}
               </dd>
             </div>
             <div>
               <dt className="eyebrow">Speed</dt>
               <dd className="numeral text-sm">
-                {answer.tokensPerSecond === 0
-                  ? "—"
-                  : `${answer.tokensPerSecond.toFixed(1)} tok/s`}
+                {metrics?.tokensPerSecond == null
+                  ? EM_DASH
+                  : `${metrics.tokensPerSecond.toFixed(1)} tok/s`}
               </dd>
             </div>
             <div>
               <dt className="eyebrow">Tokens</dt>
-              <dd className="numeral text-sm">{answer.tokens}</dd>
+              <dd className="numeral text-sm">
+                {metrics?.totalTokens ?? EM_DASH}
+              </dd>
             </div>
           </dl>
         )}
