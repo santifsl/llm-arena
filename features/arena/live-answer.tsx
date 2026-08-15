@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { AnswerCard } from "@/features/arena/answer-card";
 import type { AnswerView } from "@/features/arena/thread";
+import { failureKindOf } from "@/features/model-call/failure";
 import type { ArenaUIMessage } from "@/features/model-call/types";
 import type { ArenaModel } from "@/features/models/catalog";
 
@@ -68,6 +69,10 @@ export const LiveAnswer = ({
 
   // The hand-up happens exactly once per lane, whichever way the call ends.
   const settled = useRef(false);
+  // The stream's error sentence, kept so the settled answer records whether the
+  // failure was a rate limit. A disconnect or abort leaves it null, which reads
+  // back as a hard failure.
+  const failureText = useRef<string | null>(null);
 
   const settle = (state: AnswerView["state"], message?: ArenaUIMessage) => {
     if (settled.current) return;
@@ -78,6 +83,7 @@ export const LiveAnswer = ({
       state,
       text: textOf(message),
       metrics: metricsOf(message),
+      failure: state === "failed" ? failureKindOf(failureText.current) : null,
     });
   };
 
@@ -89,7 +95,10 @@ export const LiveAnswer = ({
         isAbort || isDisconnect || isError ? "failed" : "complete",
         message,
       ),
-    onError: () => settle("failed"),
+    onError: (error) => {
+      failureText.current = error.message;
+      settle("failed");
+    },
   });
 
   const sent = useRef(false);

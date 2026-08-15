@@ -1,13 +1,48 @@
 "use client";
 
 import { Check, ChevronDown, RotateCw, TriangleAlert } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ModelBadge } from "@/components/model-badge";
 import { Trace } from "@/components/trace";
 import type { AnswerView } from "@/features/arena/thread";
+import {
+  failureMessage,
+  RATE_LIMIT_COOLDOWN_SECONDS,
+} from "@/features/model-call/failure";
 import type { ArenaModel } from "@/features/models/catalog";
 import { cn } from "@/lib/utils";
+
+/**
+ * Seconds left before a rate-limited answer may be retried, counting down from
+ * the moment the card first shows the failure. Zero when there is no cooldown to
+ * serve, so the retry stays immediate for a hard failure.
+ *
+ * The end is fixed once, and only a ticking clock advances after that, so no
+ * state is set from the effect body, which the render-safety lint forbids. A
+ * failed card is a fresh mount, so `active` is already settled at first render.
+ */
+const useRetryCooldown = (active: boolean): number => {
+  const [endsAt] = useState(() =>
+    active ? Date.now() + RATE_LIMIT_COOLDOWN_SECONDS * 1000 : 0,
+  );
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+
+    const clock = setInterval(() => {
+      const tick = Date.now();
+
+      setNow(tick);
+      if (tick >= endsAt) clearInterval(clock);
+    }, 250);
+
+    return () => clearInterval(clock);
+  }, [active, endsAt]);
+
+  return active ? Math.max(0, Math.ceil((endsAt - now) / 1000)) : 0;
+};
 
 type AnswerCardProps = {
   readonly answer: AnswerView;
@@ -43,6 +78,8 @@ export const AnswerCard = ({
 }: AnswerCardProps) => {
   const [metricsOpen, setMetricsOpen] = useState(false);
   const failed = answer.state === "failed";
+  const rateLimited = failed && answer.failure === "rate-limited";
+  const cooldownLeft = useRetryCooldown(rateLimited);
   const { metrics } = answer;
 
   return (
@@ -105,17 +142,21 @@ export const AnswerCard = ({
           <div className="flex flex-col items-start gap-2 text-sm text-fail">
             <p className="flex items-start gap-2">
               <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-              This model didn&apos;t answer. The other answers are unaffected.
+              {failureMessage(answer.failure ?? "failed")}
             </p>
             {onRetry !== undefined && (
               <button
                 type="button"
                 onClick={onRetry}
-                disabled={retrying}
-                className="inline-flex items-center gap-1.5 rounded-sm border border-rule px-2 py-1 text-xs text-ink hover:border-rust disabled:opacity-40"
+                disabled={retrying || cooldownLeft > 0}
+                className="inline-flex items-center gap-1.5 rounded-sm border border-rule px-2 py-1 text-xs text-ink hover:border-rust disabled:opacity-40 disabled:hover:border-rule"
               >
                 <RotateCw className="size-3.5" aria-hidden />
-                {retrying ? "Starting" : "Try this model again"}
+                {retrying
+                  ? "Starting"
+                  : cooldownLeft > 0
+                    ? `Try again in ${cooldownLeft}s`
+                    : "Try this model again"}
               </button>
             )}
           </div>
