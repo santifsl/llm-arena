@@ -91,10 +91,13 @@ model Answer {
   /// still holding it. Retrying clears it, which is what makes a late write
   /// from the abandoned call a no-op rather than a corruption.
   ///
-  /// A claim whose process died is released by nothing, so a claim on a row that
-  /// is still `STREAMING` and has not been written to for five minutes can be
-  /// taken over. `updatedAt` is the claim's own timestamp, since nothing writes
-  /// to the row while it streams.
+  /// A claim whose process died is released by nothing, so a claim on a row
+  /// that is still `STREAMING` and has not been written to for longer than the
+  /// enforced model-call timeout plus a margin can be taken over. `updatedAt` is
+  /// the claim's own timestamp, since nothing writes to the row while it
+  /// streams, and the timeout is what makes a claim that old mean a dead call
+  /// rather than a slow one. Both numbers live in `features/model-call/types.ts`
+  /// and `features/arena/queries.ts`.
   streamClaimId String?
 
   timeToFirstTokenMs Int?

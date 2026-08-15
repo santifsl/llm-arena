@@ -6,7 +6,10 @@ import {
   type Answer,
   type Prisma,
 } from "@/features/database/generated/client";
-import type { CallMetrics } from "@/features/model-call/types";
+import {
+  MODEL_CALL_TIMEOUT_MS,
+  type CallMetrics,
+} from "@/features/model-call/types";
 
 import { titleFromPrompt, type AnswerView, type ThreadView } from "./thread";
 
@@ -27,11 +30,16 @@ import { titleFromPrompt, type AnswerView, type ThreadView } from "./thread";
  * before another request may take its claim over.
  *
  * `updatedAt` is exactly the moment the claim was taken, because nothing writes
- * to the row between claiming it and finishing it. Five minutes is far longer
- * than any model call this app makes survives, so this can only ever fire on a
- * call whose process is gone.
+ * to the row between claiming it and finishing it. That makes this a bet that no
+ * live call is ever older than this window, and the bet is only safe because
+ * `MODEL_CALL_TIMEOUT_MS` enforces it: every call is aborted and written as a
+ * failure at that mark, so by the time a claim is this old its call has either
+ * finished, failed, or lost its process entirely. It used to be a flat five
+ * minutes with nothing enforcing anything, which meant a slow but perfectly
+ * healthy stream could be evicted by a second request and its answer thrown
+ * away. The margin is what absorbs a write that is landing right now.
  */
-const STALE_CLAIM_MS = 5 * 60 * 1000;
+const STALE_CLAIM_MS = MODEL_CALL_TIMEOUT_MS + 60 * 1000;
 
 const STATE_BY_STATUS = {
   [AnswerStatus.STREAMING]: "streaming",
