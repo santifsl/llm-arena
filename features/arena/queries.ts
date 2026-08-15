@@ -364,10 +364,6 @@ const hasPrismaCode = (error: unknown, code: string): boolean =>
   "code" in error &&
   (error as { readonly code?: unknown }).code === code;
 
-/** Postgres refusing a duplicate, which is a real outcome rather than a crash. */
-const isUniqueViolation = (error: unknown): boolean =>
-  hasPrismaCode(error, "P2002");
-
 /**
  * An update whose `where` matched nothing. For a conditional update that is the
  * refusal itself rather than a failure, the same way `count === 0` is.
@@ -427,8 +423,17 @@ export const castVote = async ({
 
       return null;
     })
-    .catch((error: unknown) => {
-      if (isUniqueViolation(error)) return "already-voted";
+    .catch(async (error: unknown): Promise<VoteRefusal> => {
+      // A vote can exist for this turn even though this transaction did not
+      // write it. Two votes that race both pass the checks and both insert, and
+      // the loser surfaces as a duplicate (P2002), a write conflict (P2034), or
+      // another failure on `Vote_turnId_key`. The honest answer is not the error
+      // code but whether a winner is now stored, so this asks the database.
+      const existing = await database()
+        .vote.findUnique({ where: { turnId }, select: { turnId: true } })
+        .catch(() => null);
+
+      if (existing !== null) return "already-voted";
 
       console.error("[arena] could not record a vote", { error });
 
