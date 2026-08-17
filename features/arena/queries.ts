@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 
 import { database } from "@/features/database/client";
 import {
+  AnswerFailure,
   AnswerStatus,
   type Answer,
   type Prisma,
@@ -9,20 +10,42 @@ import {
 import {
   MODEL_CALL_TIMEOUT_MS,
   type CallMetrics,
+  type FailureKind,
 } from "@/features/model-call/types";
+import { errorLog } from "@/lib/errors";
 
-import { titleFromPrompt, type AnswerView, type ThreadView } from "./thread";
+import {
+  titleFromPrompt,
+  UNTITLED_THREAD,
+  type AnswerView,
+  type ThreadSummary,
+  type ThreadView,
+} from "./thread";
 
 /**
  * Every read and write the arena makes. Feature 3 deliberately shipped the
  * schema with no query layer, because data access written before it has a
  * caller is how a layer-shaped folder starts; this is that caller arriving.
  *
+ * One reader here is not the arena screen: the shell's sidebar lists a person's
+ * threads. It lives here anyway, because this is the file that owns reading a
+ * thread and filtering it by owner, and a second Prisma thread query in
+ * `features/shell/` would be the same query written twice.
+ *
  * Two rules hold across this file. Every function that touches a thread takes
  * the Clerk user id and filters on it, so ownership is part of the query rather
  * than a check somebody has to remember to run first. And nothing here throws
  * for a caller's mistake: a missing or unowned row comes back as `null`, and
  * the action or route above turns that into a plain sentence.
+ *
+ * The first rule has exactly one exception, and it is deliberate rather than an
+ * oversight: `loadThread` reads a single thread by id alone, because feature 8
+ * made a thread readable by anyone holding its link. It hands the owner's id
+ * back with the thread instead of filtering on it, so the decision about what
+ * that reader may *do* is made once, by the page, with the answer in hand. A
+ * caller that forgets to compare gets a thread it cannot act on: every write
+ * below still filters on the owner for itself, and so does the stream route's
+ * claim, so nothing depends on that comparison being remembered.
  */
 
 /**
@@ -47,27 +70,66 @@ const STATE_BY_STATUS = {
   [AnswerStatus.FAILED]: "failed",
 } as const;
 
+/** The two directions of the same small mapping, kept next to each other. */
+const FAILURE_BY_KIND = {
+  provider: AnswerFailure.PROVIDER,
+  quota: AnswerFailure.QUOTA,
+} as const satisfies Record<FailureKind, AnswerFailure>;
+
+const KIND_BY_FAILURE = {
+  [AnswerFailure.PROVIDER]: "provider",
+  [AnswerFailure.QUOTA]: "quota",
+} as const satisfies Record<AnswerFailure, FailureKind>;
+
+/**
+ * A `STREAMING` row nobody is driving any more: claimed, or created, longer ago
+ * than a call is allowed to run.
+ *
+ * `updatedAt` is the moment the row was claimed, or the moment it was created
+ * if no stream ever reached it, and nothing writes to it in between. So a row
+ * older than the window has either ended without being written, which only
+ * happens when the process holding it died, or was never picked up at all.
+ * `MODEL_CALL_TIMEOUT_MS` is what makes this a rule rather than a guess: every
+ * call is aborted and written as a failure at that mark, so no live stream can
+ * still be running past it.
+ */
+const isAbandoned = (answer: Answer): boolean =>
+  answer.updatedAt.getTime() < Date.now() - STALE_CLAIM_MS;
+
 /**
  * The one place a stored row becomes something a screen can render.
  *
- * `staleStreamingIsFailed` is the difference between a row that was just
- * created and one that is being read back later. Reading a `STREAMING` row back
- * means a stream died with nobody left to finish it, and nothing goes back to
- * rescue it, so it is shown as failed rather than as a spinner that never ends.
- * A row created a millisecond ago is streaming for real, and calling it failed
- * would be a lie the moment the turn starts.
+ * `readBack` is the difference between a row that was just created by the
+ * caller and one being read out of the database later. It only matters for a
+ * `STREAMING` row, and the rule used to be blunt: read one back and it must be
+ * a stream that died, so show it as failed rather than as a spinner that never
+ * ends.
+ *
+ * That was right while the only reader of a thread was the person who had just
+ * made it, and feature 8 made it wrong, because the commonest moment to share a
+ * link is the second the prompt is sent. A visitor arriving mid-race would have
+ * been told every model had failed. The judgement is now made properly instead
+ * of assumed: a row written to inside the window a call is allowed to run is
+ * genuinely still answering, and only an older one is a dead stream. The
+ * owner's own mid-race reload gets more honest for the same reason, since that
+ * read said "failed" too.
+ *
+ * A row created a millisecond ago by `startTurn` skips the question entirely,
+ * because calling it anything but streaming would be a lie the moment a turn
+ * starts.
  */
-const toAnswerView = (
-  answer: Answer,
-  staleStreamingIsFailed: boolean,
-): AnswerView => ({
+const toAnswerView = (answer: Answer, readBack: boolean): AnswerView => ({
   id: answer.id,
   modelId: answer.modelId,
   state:
-    staleStreamingIsFailed && answer.status === AnswerStatus.STREAMING
+    readBack && answer.status === AnswerStatus.STREAMING && isAbandoned(answer)
       ? "failed"
       : STATE_BY_STATUS[answer.status],
   text: answer.text,
+  // Null on anything that did not fail, so a card cannot show a reason for a
+  // call that went fine.
+  failure:
+    answer.failureKind === null ? null : KIND_BY_FAILURE[answer.failureKind],
   metrics:
     answer.durationMs === null
       ? null
@@ -186,33 +248,84 @@ type ThreadWithTurns = Prisma.ThreadGetPayload<{
 
 const toThreadView = (
   thread: ThreadWithTurns,
-  staleStreamingIsFailed: boolean,
+  readBack: boolean,
 ): ThreadView => ({
   id: thread.id,
-  title: thread.title ?? "Untitled thread",
+  title: thread.title ?? UNTITLED_THREAD,
   turns: thread.turns.map((turn) => ({
     id: turn.id,
     index: turn.index,
     prompt: turn.prompt,
-    answers: turn.answers.map((answer) =>
-      toAnswerView(answer, staleStreamingIsFailed),
-    ),
+    answers: turn.answers.map((answer) => toAnswerView(answer, readBack)),
     winnerAnswerId: turn.vote?.answerId ?? null,
   })),
 });
 
-/** A thread and everything in it, or `null` if it is not this person's. */
+/**
+ * A thread and everything in it, read by id alone.
+ *
+ * This is the file's one query that does not filter on the owner, because
+ * feature 8 made a thread readable by anyone holding its link. The owner's id
+ * comes back alongside it so the page can decide what this particular reader is
+ * allowed to do; nothing here decides that, and nothing downstream depends on
+ * the page getting it right, since every write checks ownership for itself.
+ *
+ * `null` is a thread that does not exist, and that is the only not-found there
+ * is: a stranger and the owner get the same answer for the same id, so the
+ * response never reveals whether an id is real to someone who cannot see it.
+ */
 export const loadThread = async (
   threadId: string,
-  clerkUserId: string,
-): Promise<ThreadView | null> => {
-  const thread = await database().thread.findFirst({
-    where: { id: threadId, clerkUserId },
+): Promise<{
+  readonly thread: ThreadView;
+  readonly ownerClerkUserId: string;
+} | null> => {
+  const thread = await database().thread.findUnique({
+    where: { id: threadId },
     include: { turns: { orderBy: { index: "asc" }, include: turnWithAnswers } },
   });
 
-  // Read back later: nothing is streaming into these rows any more.
-  return thread === null ? null : toThreadView(thread, true);
+  if (thread === null) return null;
+
+  // Read out of the database rather than just written, so a still-streaming row
+  // has to justify itself against the clock.
+  return {
+    thread: toThreadView(thread, true),
+    ownerClerkUserId: thread.clerkUserId,
+  };
+};
+
+/**
+ * How many threads the sidebar lists. Far past what fits on screen without
+ * scrolling, and short of a person with a long history paying for their whole
+ * history on every page load. There is no paging control, on purpose: a
+ * sidebar that grows a second scroll affordance is a worse sidebar.
+ */
+const THREAD_LIST_LIMIT = 50;
+
+/**
+ * This person's threads, most recently active first.
+ *
+ * Ordered by `updatedAt` rather than `createdAt`, because `appendTurn` touches
+ * it on every prompt and a list that says "your threads" while ignoring the one
+ * you were just typing in would be lying by ordering. The index follows that
+ * ordering rather than the other way round.
+ */
+export const listThreads = async (
+  clerkUserId: string,
+): Promise<readonly ThreadSummary[]> => {
+  const threads = await database().thread.findMany({
+    where: { clerkUserId },
+    orderBy: { updatedAt: "desc" },
+    take: THREAD_LIST_LIMIT,
+    select: { id: true, title: true, updatedAt: true },
+  });
+
+  return threads.map((thread) => ({
+    id: thread.id,
+    title: thread.title ?? UNTITLED_THREAD,
+    updatedAt: thread.updatedAt,
+  }));
 };
 
 /**
@@ -342,10 +455,16 @@ export const failAnswer = async (
   answerId: string,
   claimId: string,
   failureReason: string,
+  failureKind: FailureKind,
 ): Promise<boolean> => {
   const { count } = await database().answer.updateMany({
     where: { id: answerId, streamClaimId: claimId },
-    data: { streamClaimId: null, status: AnswerStatus.FAILED, failureReason },
+    data: {
+      streamClaimId: null,
+      status: AnswerStatus.FAILED,
+      failureReason,
+      failureKind: FAILURE_BY_KIND[failureKind],
+    },
   });
 
   return count > 0;
@@ -430,7 +549,7 @@ export const castVote = async ({
     .catch((error: unknown) => {
       if (isUniqueViolation(error)) return "already-voted";
 
-      console.error("[arena] could not record a vote", { error });
+      console.error(`[arena] could not record a vote: ${errorLog(error)}`);
 
       return "failed";
     });

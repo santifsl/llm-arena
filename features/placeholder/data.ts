@@ -10,21 +10,15 @@
  * Nothing outside this file invents data. If a screen needs a number it does
  * not have yet, it comes from here.
  *
- * What is left is what features 7 and 9 still stand on: the sidebar's thread
- * list, and the leaderboard's standings. Feature 5 took the models out and
- * feature 6 took the turns and answers out, so the standings point at a
+ * What is left is what feature 9 still stands on: the leaderboard's standings.
+ * Feature 5 took the models out, feature 6 took the turns and answers out, and
+ * feature 7 took the sidebar's thread list out, so the standings point at a
  * position in the live catalog rather than naming a model of their own.
  *
  * Deleting the whole folder was written into feature 6's plan and turned out to
  * be wrong: it would have forced features 7 and 9 to be built early. The
  * correction is recorded in `docs/scope.md`.
  */
-
-export type PlaceholderThread = {
-  readonly id: string;
-  readonly name: string;
-  readonly updatedLabel: string;
-};
 
 export type PlaceholderStanding = {
   /** A position in the live catalog, for the same reason answers carry one. */
@@ -34,13 +28,6 @@ export type PlaceholderStanding = {
   readonly avgFirstTokenMs: number;
   readonly avgTokensPerSecond: number;
 };
-
-export const PLACEHOLDER_THREADS: readonly PlaceholderThread[] = [
-  { id: "thread-1", name: "Explaining tokens", updatedLabel: "Just now" },
-  { id: "thread-2", name: "Rewriting the error copy", updatedLabel: "Tuesday" },
-  { id: "thread-3", name: "Regex for ISO dates", updatedLabel: "Last week" },
-  { id: "thread-4", name: "Naming the trace component", updatedLabel: "Aug 4" },
-];
 
 export const PLACEHOLDER_GLOBAL_STANDINGS: readonly PlaceholderStanding[] = [
   {

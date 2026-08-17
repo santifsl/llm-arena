@@ -192,6 +192,52 @@ export const findArenaModel = (
 ): ArenaModel | undefined => models.find((model) => model.id === modelId);
 
 /**
+ * The least a screen needs in order to name a model: the badge letter and a
+ * label.
+ *
+ * An answer card takes this rather than a whole `ArenaModel`, because a stored
+ * thread outlives the catalog. OpenRouter delists models, and an answer from a
+ * model that is no longer listed still has to render: it is part of a record
+ * somebody may have been sent a link to. Everything that would have to be
+ * invented for a model the catalog no longer describes, its context window and
+ * its price, is deliberately absent from this type, so the fallback below
+ * cannot fabricate a measurement.
+ */
+export type ModelIdentity = {
+  readonly initial: string;
+  readonly name: string;
+};
+
+const UNKNOWN_INITIAL = "?";
+
+/**
+ * What is known about a model id, whether or not the catalog still lists it.
+ *
+ * The alternative, which this replaces, was to skip any answer whose model is
+ * missing from the catalog. That was close to harmless while the only reader of
+ * a thread was the person who had just made it, and it stopped being harmless
+ * the moment a thread became a link a stranger can open a week later: an answer
+ * silently disappearing out of a shared record is worse than a card labelled
+ * with a raw id. The id is the honest label here, because it is genuinely all
+ * that is left to know.
+ */
+export const modelIdentity = (
+  models: readonly ArenaModel[],
+  modelId: string,
+): ModelIdentity => {
+  const listed = findArenaModel(models, modelId);
+
+  if (listed !== undefined) return listed;
+
+  const vendor = modelId.split("/")[0];
+
+  return {
+    initial: vendor === "" ? UNKNOWN_INITIAL : vendor.slice(0, 1).toUpperCase(),
+    name: modelId,
+  };
+};
+
+/**
  * The server-side spending gate, in two layers. The suffix has to hold no
  * matter what, and on top of that the id has to be a model the live catalog
  * still lists.

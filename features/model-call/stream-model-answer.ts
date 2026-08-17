@@ -6,13 +6,17 @@ import {
   type ModelMessage,
 } from "ai";
 
+import { describeError, errorLog } from "@/lib/errors";
+
 import { toCallMetrics } from "./metrics";
 import { arenaModel } from "./openrouter";
 import {
+  FAILURE_PART_ID,
   METRICS_PART_ID,
   MODEL_CALL_TIMEOUT_MS,
   type ArenaUIMessage,
   type CallMetrics,
+  type FailureKind,
 } from "./types";
 
 /**
@@ -24,19 +28,52 @@ const READER_FACING_FAILURE =
   "This model could not answer. Try again, or send the prompt without it.";
 
 /**
- * The reason kept for the log and the row. `String(error)` alone turned a
- * provider's error object into the literal text `[object Object]`, which was
- * observed on a real failed call and tells whoever reads the log nothing.
+ * OpenRouter's own name for the daily free-tier ceiling, which it puts in the
+ * body of the 429 it answers with. Matching on it rather than on the status
+ * alone is the difference between a true sentence and a plausible one: a 429
+ * can also be a short burst limit, which resets in seconds and is genuinely a
+ * per-call problem, while this one is account-wide and lasts until midnight.
+ *
+ * Observed directly against the real account: `429`, `X-RateLimit-Limit: 50`,
+ * `X-RateLimit-Remaining: 0`, reset exactly at the next UTC midnight.
  */
-const describe = (error: unknown): string => {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
+const FREE_TIER_CAP_MARKER = "free-models-per-day";
 
-  try {
-    return JSON.stringify(error) ?? String(error);
-  } catch {
-    return String(error);
-  }
+/**
+ * The provider's own response body, which sits on the API error itself.
+ *
+ * It has to walk the chain, and that is not defensive coding: measured against
+ * the real provider, a refused call arrives as an `AI_RetryError` wrapping the
+ * last `AI_APICallError`, so the body is one or two links down rather than on
+ * the error that was thrown. The wrapper's message does embed the inner one,
+ * which is why matching on the text works at all, but reading the body where it
+ * actually lives is what stops that from being the only thing holding this up.
+ */
+const bodyOf = (error: unknown, depth = 0): string => {
+  if (typeof error !== "object" || error === null || depth > 3) return "";
+
+  const candidate = error as {
+    readonly responseBody?: unknown;
+    readonly cause?: unknown;
+    readonly lastError?: unknown;
+  };
+
+  if (typeof candidate.responseBody === "string") return candidate.responseBody;
+
+  return (
+    bodyOf(candidate.lastError, depth + 1) || bodyOf(candidate.cause, depth + 1)
+  );
+};
+
+/**
+ * Which sentence this failure earns. Everything that is not demonstrably the
+ * free-tier cap stays `provider`, because guessing wrong here means telling a
+ * person the arena is out of requests when one model simply fell over.
+ */
+const failureKindOf = (error: unknown): FailureKind => {
+  const haystack = `${bodyOf(error)} ${describeError(error)}`;
+
+  return haystack.includes(FREE_TIER_CAP_MARKER) ? "quota" : "provider";
 };
 
 type StreamOptions = {
@@ -46,7 +83,7 @@ type StreamOptions = {
   /** Called once the model call ends, with the text and the real numbers. */
   readonly onComplete: (text: string, metrics: CallMetrics) => Promise<void>;
   /** Called instead, with the reason, when the call never produced an answer. */
-  readonly onFail: (reason: string) => Promise<void>;
+  readonly onFail: (reason: string, kind: FailureKind) => Promise<void>;
 };
 
 const textOf = (content: ReadonlyArray<{ readonly type: string }>): string =>
@@ -72,7 +109,9 @@ export const streamModelAnswer = ({
   onFail,
 }: StreamOptions): ReadableStream<InferUIMessageChunk<ArenaUIMessage>> => {
   const onError = (error: unknown): string => {
-    console.error(`[arena] model call failed`, { modelId, error });
+    console.error(
+      `[arena] model call failed for ${modelId}: ${errorLog(error)}`,
+    );
 
     return READER_FACING_FAILURE;
   };
@@ -123,9 +162,11 @@ export const streamModelAnswer = ({
         onAbort: async () => {
           const reason = `model call exceeded ${MODEL_CALL_TIMEOUT_MS}ms`;
 
-          console.error("[arena] model call timed out", { modelId });
+          console.error(`[arena] model call timed out for ${modelId}`);
 
-          await settle(() => onFail(reason));
+          // A timeout is this model being slow, not the account being out of
+          // requests, so it keeps the generic sentence.
+          await settle(() => onFail(reason, "provider"));
         },
         onLanguageModelCallEnd: async (event) => {
           const metrics = toCallMetrics(event);
@@ -142,7 +183,19 @@ export const streamModelAnswer = ({
         },
         onError: async ({ error }) => {
           onError(error);
-          await settle(() => onFail(describe(error)));
+
+          const kind = failureKindOf(error);
+
+          // Written before the row is, and only if this ending is the one that
+          // counts, so the live card and the stored row cannot disagree about
+          // why the call failed.
+          if (await settle(() => onFail(describeError(error), kind))) {
+            writer.write({
+              type: "data-failure",
+              id: FAILURE_PART_ID,
+              data: { kind },
+            });
+          }
         },
       });
 

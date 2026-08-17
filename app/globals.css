@@ -254,6 +254,160 @@
     margin-top: 0.75em;
   }
 
+  /* Markdown inside an answer.
+   *
+   * Models write in Markdown whether asked to or not, so these rules exist to
+   * make a structured answer readable rather than to give it a voice of its
+   * own. Everything stays in the reading serif and on the existing tokens: an
+   * answer is the model talking, and the app's own signage face and accent do
+   * not belong inside it. Headings are separated by weight and space rather
+   * than by size, because a model emitting `###` on its third line should not
+   * out-shout the page title above it.
+   *
+   * Rust appears here for links only, which is the interaction half of the
+   * accent's rule. */
+  .answer-prose > :first-child {
+    margin-top: 0;
+  }
+
+  .answer-prose > :last-child {
+    margin-bottom: 0;
+  }
+
+  .answer-prose h1,
+  .answer-prose h2,
+  .answer-prose h3,
+  .answer-prose h4,
+  .answer-prose h5,
+  .answer-prose h6 {
+    margin-top: 1.25em;
+    margin-bottom: 0.4em;
+    font-size: 1em;
+    font-weight: 600;
+    line-height: 1.35;
+    color: var(--ink);
+  }
+
+  .answer-prose h1,
+  .answer-prose h2 {
+    font-size: 1.0625em;
+  }
+
+  .answer-prose ul,
+  .answer-prose ol {
+    margin: 0.75em 0;
+    padding-left: 1.4em;
+  }
+
+  .answer-prose ul {
+    list-style: disc;
+  }
+
+  .answer-prose ol {
+    list-style: decimal;
+  }
+
+  .answer-prose li + li {
+    margin-top: 0.25em;
+  }
+
+  .answer-prose li > ul,
+  .answer-prose li > ol {
+    margin: 0.25em 0;
+  }
+
+  .answer-prose strong {
+    font-weight: 650;
+    color: var(--ink);
+  }
+
+  .answer-prose em {
+    font-style: italic;
+  }
+
+  .answer-prose a {
+    color: var(--rust);
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+  }
+
+  .answer-prose code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    background-color: var(--surface-raised);
+    border-radius: 0.125rem;
+    padding: 0.1em 0.3em;
+  }
+
+  /* A code block scrolls on its own rather than widening the card, which would
+     push a three-across row of answers out of shape. */
+  .answer-prose pre {
+    margin: 0.75em 0;
+    padding: 0.75em;
+    overflow-x: auto;
+    background-color: var(--surface-raised);
+    border: 1px solid var(--rule);
+    border-radius: 0.125rem;
+  }
+
+  .answer-prose pre code {
+    padding: 0;
+    background-color: transparent;
+    font-size: 0.8125em;
+    line-height: 1.5;
+  }
+
+  .answer-prose blockquote {
+    margin: 0.75em 0;
+    padding-left: 0.75em;
+    border-left: 2px solid var(--rule);
+    color: var(--ink-dim);
+  }
+
+  .answer-prose hr {
+    margin: 1em 0;
+    border: 0;
+    border-top: 1px solid var(--rule);
+  }
+
+  .answer-prose table {
+    display: block;
+    overflow-x: auto;
+    margin: 0.75em 0;
+    border-collapse: collapse;
+    font-size: 0.9em;
+  }
+
+  .answer-prose th,
+  .answer-prose td {
+    border: 1px solid var(--rule);
+    padding: 0.35em 0.6em;
+    text-align: left;
+  }
+
+  .answer-prose th {
+    font-weight: 600;
+  }
+
+  /* The streaming caret rides the end of the last line rather than being a
+     sibling of the text, which is the only way it stays inline once the answer
+     is real Markdown and its final block could be a list item or a heading. */
+  .answer-prose.is-streaming > :last-child::after {
+    content: "";
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    margin-left: 0.1em;
+    translate: 0 0.15em;
+    background-color: var(--rust);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .answer-prose.is-streaming > :last-child::after {
+      animation: answer-caret 1.2s ease-in-out infinite;
+    }
+  }
+
   /* A caption or a column heading: small, quiet, and unmistakably ours. */
   .eyebrow {
     font-family: var(--font-mono);
@@ -261,5 +415,11 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--ink-dim);
+  }
+}
+
+@keyframes answer-caret {
+  50% {
+    opacity: 0.25;
   }
 }

@@ -1,6 +1,7 @@
 "use server";
 
 import { auth } from "@clerk/nextjs/server";
+import { revalidatePath } from "next/cache";
 
 import { captureArenaEvent } from "@/features/analytics/server";
 import {
@@ -8,6 +9,7 @@ import {
   MAX_SELECTED_MODELS,
 } from "@/features/models/catalog";
 import { protectPromptSubmission } from "@/features/security/arcjet";
+import { errorLog } from "@/lib/errors";
 
 import { castVote, reopenAnswer, startTurn, type VoteRefusal } from "./queries";
 import type { AnswerView, ThreadView } from "./thread";
@@ -87,7 +89,7 @@ export const submitPrompt = async ({
     prompt: text,
     modelIds,
   }).catch((error: unknown) => {
-    console.error("[arena] could not start a turn", { error });
+    console.error(`[arena] could not start a turn: ${errorLog(error)}`);
 
     return null;
   });
@@ -154,6 +156,33 @@ export const voteForAnswer = async ({
   return { ok: true };
 };
 
+/**
+ * Puts a newly created thread into the sidebar's list.
+ *
+ * The list lives in the shell's layout, and a layout is not re-rendered by the
+ * client navigation that follows a first prompt, so without a revalidation a
+ * person's first thread of the sitting is missing from their own sidebar until
+ * a full page load.
+ *
+ * It is a separate action, called by the arena once the turn has finished,
+ * rather than a line inside `submitPrompt`, and that is the whole point.
+ * Revalidating from the submit refreshes the router while three streams are
+ * live, and the arena has just pointed the router at `/t/[threadId]` with
+ * `history.replaceState`, which Next patches and treats as a real navigation.
+ * The refresh therefore lands on a different page component, unmounts the
+ * arena, and takes all three lanes with it: the server keeps draining and the
+ * answers land in the database, while the browser shows nothing until a reload.
+ * Refreshing after the lanes have settled costs the sidebar a few seconds and
+ * has nothing left to tear down.
+ */
+export const refreshThreadList = async (): Promise<void> => {
+  const { userId } = await auth();
+
+  if (!userId) return;
+
+  revalidatePath("/", "layout");
+};
+
 /** Runs one model again, on the row it already failed in. */
 export const retryModel = async (
   answerId: string,
@@ -164,7 +193,7 @@ export const retryModel = async (
 
   const answer = await reopenAnswer(answerId, userId).catch(
     (error: unknown) => {
-      console.error("[arena] could not reopen an answer", { error });
+      console.error(`[arena] could not reopen an answer: ${errorLog(error)}`);
 
       return null;
     },

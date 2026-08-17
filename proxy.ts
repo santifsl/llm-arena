@@ -6,8 +6,10 @@ import { clerkMiddleware } from "@clerk/nextjs/server";
  *
  * Nothing is protected here on purpose. This only makes the signed-in user
  * available to routes and server components. Deciding which routes actually
- * require sign-in belongs to the features that need it: sending a prompt and
- * voting in slice 1, public thread viewing in slice 3.
+ * require sign-in belongs to the features that need it: sending a prompt,
+ * voting, and streaming an answer all check for themselves, and reading a
+ * thread deliberately does not, since feature 8 made a thread readable by
+ * anyone holding its link.
  */
 export default clerkMiddleware();
 

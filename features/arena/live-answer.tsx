@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { AnswerCard } from "@/features/arena/answer-card";
 import type { AnswerView } from "@/features/arena/thread";
 import type { ArenaUIMessage } from "@/features/model-call/types";
-import type { ArenaModel } from "@/features/models/catalog";
+import type { ModelIdentity } from "@/features/models/catalog";
 
 /**
  * One model's answer while it is still arriving.
@@ -40,6 +40,15 @@ const textOf = (message: UIMessage | undefined): string =>
 const metricsOf = (message: ArenaUIMessage | undefined) =>
   message?.parts.find((part) => part.type === "data-metrics")?.data ?? null;
 
+/**
+ * Why the call failed, when the server said. It arrives as a data part rather
+ * than being guessed from the error text, so the sentence this card shows is
+ * the same one a reload will show from the stored row.
+ */
+const failureOf = (message: ArenaUIMessage | undefined) =>
+  message?.parts.find((part) => part.type === "data-failure")?.data.kind ??
+  null;
+
 export const LiveAnswer = ({
   answer,
   model,
@@ -49,7 +58,7 @@ export const LiveAnswer = ({
   onSettled,
 }: {
   readonly answer: AnswerView;
-  readonly model: ArenaModel;
+  readonly model: ModelIdentity;
   /** Sent so the local message list reads sensibly; the wire carries only the
    * answer id, because the server owns the history. */
   readonly prompt: string;
@@ -78,6 +87,10 @@ export const LiveAnswer = ({
       state,
       text: textOf(message),
       metrics: metricsOf(message),
+      // `onError` is the transport-level path and carries no message, so there
+      // is no data part to read and `provider` is the honest default: a request
+      // that never reached the provider cannot be known to be a quota refusal.
+      failure: state === "failed" ? (failureOf(message) ?? "provider") : null,
     });
   };
 
@@ -111,10 +124,15 @@ export const LiveAnswer = ({
         state: status === "error" ? "failed" : "streaming",
         text: textOf(streamed),
         metrics: metricsOf(streamed),
+        failure:
+          status === "error" ? (failureOf(streamed) ?? "provider") : null,
       }}
       model={model}
       scaleMs={scaleMs}
       elapsedMs={elapsedMs}
+      // This lane is the one receiving the stream, which is what tells the card
+      // apart from one showing a call running somewhere else.
+      live
     />
   );
 };

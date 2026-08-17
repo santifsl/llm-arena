@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import { Sidebar } from "@/features/shell/sidebar";
+import type { SidebarThread } from "@/features/shell/threads";
 import { cn } from "@/lib/utils";
 
 /**
@@ -47,7 +48,14 @@ export const useShell = (): ShellState => {
 /** Tailwind's `md`, the width at which the drawer becomes a plain column. */
 const DESKTOP_QUERY = "(min-width: 48rem)";
 
-export const AppShell = ({ children }: { readonly children: ReactNode }) => {
+export const AppShell = ({
+  children,
+  threads,
+}: {
+  readonly children: ReactNode;
+  /** Read by the layout on the server. Null if that read failed. */
+  readonly threads: readonly SidebarThread[] | null;
+}) => {
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   /** Whatever had focus when the drawer opened, so it can be given back. */
@@ -115,7 +123,7 @@ export const AppShell = ({ children }: { readonly children: ReactNode }) => {
   return (
     <ShellContext.Provider value={shell}>
       <div className="flex h-dvh w-full overflow-hidden">
-        <Sidebar />
+        <Sidebar threads={threads} />
 
         {/* A mouse affordance only. It is kept out of the tab order because a
             keyboard user closes the drawer with Escape or its own close

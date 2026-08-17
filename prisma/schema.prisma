@@ -21,6 +21,24 @@ enum AnswerStatus {
   FAILED
 }
 
+/// Why an answer failed, in the only terms a reader is ever shown.
+///
+/// This is deliberately not `failureReason`, which is free text for whoever
+/// reads the server log and is never rendered. This is a small closed set that
+/// a screen is allowed to speak, and it exists because one of its cases needs
+/// a different sentence: every model in this app is free tier, OpenRouter caps
+/// a free account at 50 model requests a day across all models, and when that
+/// runs out every selected model fails at once. Telling a person "this model
+/// didn't answer, the others are unaffected" in that moment is false, since the
+/// others are failing for the same reason at the same instant.
+///
+/// `PROVIDER` is everything else and keeps the generic sentence, which is the
+/// right answer for a genuine per-model failure.
+enum AnswerFailure {
+  PROVIDER
+  QUOTA
+}
+
 /// One conversation. The id is the public share URL in slice 3, so it is a
 /// cuid2 rather than anything sequential or guessable.
 ///
@@ -37,8 +55,10 @@ model Thread {
   turns Turn[]
   votes Vote[]
 
-  // The sidebar's thread list: this person's threads, newest first.
-  @@index([clerkUserId, createdAt])
+  // The sidebar's thread list: this person's threads, most recently active
+  // first. It orders on `updatedAt`, which every new turn touches, so the index
+  // covers that column rather than `createdAt`.
+  @@index([clerkUserId, updatedAt])
 }
 
 /// One prompt round. The prompt text is stored once, on the turn, because every
@@ -80,6 +100,11 @@ model Answer {
   /// For the server log only. A person is never shown this; every visible
   /// failure is a plain sentence with a retry.
   failureReason String?
+
+  /// The reader-facing half of a failure: which sentence the card should say.
+  /// Null unless the answer actually failed. Stored rather than derived, so a
+  /// reload and a share link tell the same truth the live card did.
+  failureKind AnswerFailure?
 
   /// Which stream currently owns this row, if any.
   ///
