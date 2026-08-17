@@ -27,6 +27,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | 7   | App shell & thread history                  | Slice 2    | wired to real threads; the by-eye check is the only box left         |
 | 8   | Public thread visibility & sharing          | Slice 3    | built and probed signed out; the by-eye check is the only box left   |
 | 9   | Leaderboard: global & personal              | Slice 4    | UI built on placeholder rows; real query not started                 |
+| 10  | Arcjet on the public thread read            | Slice 3    | built and proven locally; one production check left, see the feature |
 
 ## Foundation
 
@@ -644,7 +645,37 @@ _A delisted model currently vanishes from a shared record, and this feature is w
 
 _This is the app's first unauthenticated database read, and that is recorded rather than skipped._ Every existing surface Arcjet covers is behind sign-in. No rule is added here: the page is one row fetched by primary key with its turns, it is a server render Next can cache, and adding a per-render Arcjet decision to a page is more machinery than the exposure warrants. What makes this an acceptance instead of an oversight is that it is written down: if the thread page ever grows a second query, a search, or a listing, this paragraph is the reason to revisit it.
 
+_Half of that acceptance was wrong, and the revisit happened on 2026-08-17 rather than on the trigger it named._ The paragraph above reasons entirely about what a stranger can **see**, and that half still holds exactly as written: one row, by primary key, an unguessable id, nothing leaked. It then spends that reasoning on a different question it never asked, which is how **often** a stranger can ask. Those are not the same risk and the second one does not shrink just because the first is small. It also says the page "is a server render Next can cache", which is untrue: the page calls `auth()`, so it is dynamic, nothing is cached, and every request is a real render and a real query returning every answer in the thread. One shared link plus a loop is therefore an open bill against our database, and it is the one thing sharing made reachable that sign-in used to prevent for free. The trigger the paragraph set, a second query or a search or a listing, would have caught a leak and would never have caught this. See feature 10 for what was actually built.
+
 _What this feature deliberately does not build._ No forking or continuing somebody else's thread. No visibility toggle, since feature 3 already refused the column on the grounds that a field with one value forever is dead schema, and nothing here changes that. No public index of threads: a link is shareable, the set of links is not browsable, and those are different products.
+
+### 10. Arcjet on the public thread read
+
+Feature 8 opened one route to strangers and left it unguarded on reasoning that only covered half the risk. This closes the other half: how often one address may ask, and which non-humans are welcome to ask at all.
+
+- [x] Decide the approach
+- [x] Build: a third Arcjet client for the public read, with shield, a bot rule that allows link unfurlers and search engines, and a sliding window keyed on the source address
+- [x] Build: the decision runs before the query, and once per request, so a refused read costs a decision and not a database read
+- [x] Build: a refused read renders a sentence and a real retry instead of the thread, and is never indexed
+- [x] Build: the rate-limit sentence for a reader is its own copy, because a visitor has not sent any prompts
+- [x] Build: an `ERROR` decision is logged instead of failing open silently
+- [x] Build: `pnpm verify` clean
+- [x] Build: every rule proven firing against the real Arcjet service, 2026-08-17, decisions recorded in the console. `curl` denied with `botV2.denied: ["CURL"]`; Slack, Discord, and Twitter unfurlers allowed through to a rendered thread while an unrecognised scripted client was denied; 200 concurrent reads produced 150 `REASON_RATE_LIMIT` denials carrying the reader's sentence
+- [ ] Checked in the real deployment: one shared link opened, then the Arcjet console showing an `ALLOW` for it carrying a real client IP rather than an empty one
+
+**What building it changed about the plan, 2026-08-17.**
+
+_A sliding window, not a token bucket, and the two rate limits now say different things._ A bucket refills slowly because it prices a scarce thing, which is right for prompts and wrong for reads: a visitor who reloads three times to watch a race finish and then meets a ten-minute wall would be a bug, not a defence. A window forgets. The ceiling is 120 reads a minute per address, deliberately far above any human and any office sharing one outbound address, and far below any loop, because the cost of guessing high is one extra database read and the cost of guessing low is a shared link that fails for a roomful of people at once. The two limits also needed separate copy: the prompt budget's sentence says you have sent a lot of prompts, which is simply false told to somebody who has opened a link and sent nothing.
+
+_The bot rule is the opposite posture from everywhere else in the app, on purpose._ Every other entry point runs `allow: []`, because nothing legitimate scripts the arena. A shared link is the case where the automated traffic is the point: the first thing Slack, Discord, iMessage, and the rest do with a pasted URL is fetch it to build a preview card, and denying those does not stop abuse, it just makes shared links render as bare URLs, which is the feature failing quietly. `SEARCH_ENGINE` is in the allow list too, and that one is a product decision rather than a technical one: shared threads are meant to be findable. `THREAD_READERS` is where that changes if it ever stops being true.
+
+_A denial had to become a screen, which the plan underestimated._ A page cannot set a 429 the way a route handler can, so a refused read is a 200 carrying a sentence and a retry, and the honest consequence is that the status code no longer tells the whole story on this route; the console does. The refusal is `noindex`ed in `generateMetadata`, which matters precisely because search engines are allowed through: the one page they must never record as a thread's content is the sentence saying we would not serve it.
+
+_The decision is memoised per request, and this is a correctness fix rather than a saving._ `generateMetadata` and the page are called separately by Next, so an unmemoised guard would spend two decisions on one visitor and the rate limit would deny at half the number it advertises. `readThread` was already wrapped in `cache` for the same reason one line above, which is what made the mistake easy to see.
+
+_Verifying this found that the whole guard can fail open silently, and that changed the code._ Running the built app locally, every rule stopped evaluating: `unable to generate fingerprint: requested `ip`characteristic but the`ip` value was empty`. Arcjet will not trust a forwarded-for header without a hosting platform it recognises, quite rightly, since headers are spoofable. Locally that is an artifact. In a real deployment it is the failure mode that matters most, because it does not deny anything, it allows everything, and the only sign is a line in a log nobody reads. This is also the app's first IP-keyed rule, which is why it never surfaced before: the prompt budget keys on the Clerk user id and needs no address. `decide` now logs an `ERROR` decision explicitly. It still fails open, which feature 6 decided and this does not reopen, but a deployment that hands Arcjet no client address is now loud instead of quiet.
+
+_Local `next start` cannot prove an IP-keyed rule, and that is why one box above is still open._ It has no recognised platform, so there is no trustworthy client address and the rule cannot run. Everything provable without one was proven against the real service through the dev server, where Arcjet substitutes a development address. What is left is the one thing only the deployment can answer, and it is a check rather than a build.
 
 ## Slice 4: Leaderboard
 
