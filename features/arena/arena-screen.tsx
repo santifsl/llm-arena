@@ -188,7 +188,9 @@ export const ArenaScreen = ({
       return false;
     }
 
-    const turn = result.thread.turns.at(-1);
+    // By id, not by position: another tab may have committed a later turn that
+    // this thread read includes, and the last turn would then be someone else's.
+    const turn = result.thread.turns.find(({ id }) => id === result.turnId);
 
     if (turn === undefined) return false;
 
