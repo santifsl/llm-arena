@@ -600,6 +600,28 @@ _`lib/errors.ts` now owns it._ `describeError` gives a short line including the 
 
 _The owner's own path is the one thing a probe could not check._ Everything a visitor sees was confirmed with `curl` against a running server, because a signed-out reader is precisely what `curl` is. That the composer, the pick control, and the retry all still work for the owner cannot be shown that way, since the route refuses to hand a scripted caller a session, which is the same limit feature 5 and feature 6 both hit. It is the open box above.
 
+**What that log then caught: "That prompt could not be sent", 2026-08-17.**
+
+_The first real failure the fixed logger described, and it was one line._ `[arena] could not start a turn: P2028: Transaction API error: Unable to start a transaction in the given time`, with a stack running through `submitPrompt`. Under the old `{}` logging this was the generic refusal sentence and nothing else, which is exactly the class of bug the logging fix was made for. Worth recording as the payoff: the previous entry was not housekeeping.
+
+_P2028 is the transaction failing to start, not to finish, and that distinction is the whole diagnosis._ The budget it blew is `maxWait`, which covers taking a connection from the pool and issuing `BEGIN`, and Prisma defaults it to two seconds. Measured against the real database rather than assumed: opening a connection to `pooled.db.prisma.io` costs about 966ms, and a bare `BEGIN`/`SELECT 1`/`COMMIT` about 604ms. So a cold connect plus `BEGIN` can spend the entire allowance before any of the app's own work runs.
+
+_What made it intermittent was `pg`'s ten-second idle reap._ The log timeline shows activity, then a two-minute gap, then the failure on the first prompt after it. The pool had dropped its connections in the meantime, so that submission paid a full handshake inside a budget that could not afford one. It fails after a quiet spell and succeeds while warm, which is why it looked random and why the prompt's content, typos included, never mattered.
+
+_Ruled out rather than assumed, at the time of the failure._ `pg_stat_activity` showed eight idle and one active against a `max_connections` of 50, and zero ungranted locks. Not pool exhaustion, not lock contention, not the free tier's ceiling. Latency against a budget written for a database on the same machine.
+
+_The fix is two changes, because the cause is two things._ `transactionOptions` sets `maxWait` to ten seconds and `timeout` to twenty, so the budget suits a remote pooler; and the adapter gets `min: 1` with a five-minute `idleTimeoutMillis`, so an idle session stops paying the handshake repeatedly. `min` is what actually does that work: `pg` only reaps an idle client while the pool is above its minimum, confirmed in `pg-pool`'s own source. Neither pre-opens anything, so the first call after the process starts still pays full price, and only that one.
+
+_The generous timeout is a backstop, and the transaction got shorter anyway._ `startTurn` was running its read-back inside the transaction: a query returning the thread's entire history, every turn with every answer and vote, while holding a row lock it did not need, alongside writes that touch three rows. It now returns two ids and reads the thread after the commit. Measured at today's data the read-back is 169ms on the largest existing thread, which has three turns, so this is a small win now and a growing one, and it is the right shape regardless: the turn is durable by then, so a reader can only see more than it would have, never less.
+
+_That also removed a latent race nobody had reported._ The turn's id used to be inferred from whichever turn sorted last in the read-back, which is wrong if another tab appends between the write and the read. It comes from the insert now.
+
+_What was considered and rejected: folding the turn count into the locking query._ One fewer round trip, and incorrect. A scalar subquery would be evaluated against the snapshot taken before the lock was granted, which reintroduces precisely the index race the `FOR UPDATE` exists to prevent. The count stays a separate statement after the lock. Noted here because it is an obvious-looking optimisation and the next person to read this function will think of it.
+
+- [x] The transaction budget, the warm pool, and the shorter `startTurn`, built and `pnpm verify` clean, 2026-08-17
+- [ ] Checked by eye in a real browser: send a prompt after leaving the app idle for several minutes, which is the exact condition that produced P2028
+- [ ] `startTurn` returning `null` for a thread that is missing or not yours lands on the same "could not be sent" sentence as a genuine crash. Two different things a person would act on differently. Deliberately left for later, 2026-08-17
+
 **The approach, decided 2026-08-15.**
 
 _Only one route opens up._ `/t/[threadId]` and nothing else. The sidebar's list, the submit, vote, and retry actions, and the stream route's claim all keep exactly the gates they have. This feature is a read becoming public, not the app becoming public, and the smaller that surface is the easier it is to say truthfully what a stranger can reach.

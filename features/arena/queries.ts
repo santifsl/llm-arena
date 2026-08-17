@@ -164,6 +164,9 @@ const turnWithAnswers = {
  * requests cannot each create the turn without racing for it, the prompt
  * survives every model failing, and the browser gets the ids the vote will
  * need.
+ *
+ * The transaction covers the writes and stops there. Reading the thread back
+ * for the screen happens after the commit, for the reason given below.
  */
 export const startTurn = async ({
   clerkUserId,
@@ -175,11 +178,15 @@ export const startTurn = async ({
   readonly threadId: string | null;
   readonly prompt: string;
   readonly modelIds: readonly string[];
-}): Promise<{ readonly thread: ThreadView; readonly turnId: string } | null> =>
-  database().$transaction(async (tx) => {
+}): Promise<{
+  readonly thread: ThreadView;
+  readonly turnId: string;
+} | null> => {
+  const appended = await database().$transaction(async (tx) => {
     if (threadId === null) {
       const created = await tx.thread.create({
         data: { clerkUserId, title: titleFromPrompt(prompt) },
+        select: { id: true },
       });
 
       return appendTurn(tx, created.id, prompt, modelIds);
@@ -204,42 +211,76 @@ export const startTurn = async ({
     return appendTurn(tx, threadId, prompt, modelIds);
   });
 
+  if (appended === null) return null;
+
+  // Read after the commit rather than inside it, and this is the whole reason
+  // the transaction returns two ids instead of a thread.
+  //
+  // Every statement here costs a round trip to a pooled database a few hundred
+  // milliseconds away, and this is by far the heaviest of them: it returns the
+  // thread's entire history, every turn with every answer and vote, where the
+  // writes above touch three rows. Running it inside the transaction spent that
+  // whole cost holding a row lock, on a query that needs no lock at all — the
+  // turn is already durable by then, so a reader can only see more than it
+  // would have, never less. Feature 3's budget for the transaction body is five
+  // seconds by default, and a thread long enough to be worth sharing was
+  // heading for it.
+  //
+  // The concurrent case gets better rather than worse. A second tab appending
+  // its own turn between the commit and this read shows up here, which is the
+  // truth of the thread, and it can no longer be mistaken for this caller's own
+  // turn: the id comes from the insert now, where it used to be inferred from
+  // whichever turn happened to sort last.
+  const thread = await database().thread.findUnique({
+    where: { id: appended.threadId },
+    include: { turns: { orderBy: { index: "asc" }, include: turnWithAnswers } },
+  });
+
+  if (thread === null) return null;
+
+  return {
+    // Just created, so a streaming row is genuinely streaming.
+    thread: toThreadView(thread, false),
+    turnId: appended.turnId,
+  };
+};
+
 /**
- * Writes the turn and its answer rows, and returns the whole thread. Only ever
- * called with the thread's row already locked, or on a thread nobody else can
- * have heard of yet.
+ * Writes the turn and its answer rows. Only ever called with the thread's row
+ * already locked, or on a thread nobody else can have heard of yet.
+ *
+ * Deliberately writes and returns ids, nothing more. Reading the thread back is
+ * the caller's job, once the transaction has committed.
  */
 const appendTurn = async (
   tx: PrismaTransaction,
   threadId: string,
   prompt: string,
   modelIds: readonly string[],
-): Promise<{ readonly thread: ThreadView; readonly turnId: string }> => {
+): Promise<{ readonly threadId: string; readonly turnId: string }> => {
+  // Counted after the lock above, never alongside it. Folding this into the
+  // locking query as a subquery would read the count from the snapshot taken
+  // before the lock was granted, which is exactly the race the lock is there to
+  // prevent.
   const turns = await tx.turn.count({ where: { threadId } });
 
-  await tx.turn.create({
+  const turn = await tx.turn.create({
     data: {
       threadId,
       index: turns,
       prompt,
       answers: { create: modelIds.map((modelId) => ({ modelId })) },
     },
+    select: { id: true },
   });
 
   // Touched so the sidebar's newest-first list is honest about activity.
-  const updated = await tx.thread.update({
+  await tx.thread.update({
     where: { id: threadId },
     data: { updatedAt: new Date() },
-    include: {
-      turns: { orderBy: { index: "asc" }, include: turnWithAnswers },
-    },
   });
 
-  return {
-    // Just created, so a streaming row is genuinely streaming.
-    thread: toThreadView(updated, false),
-    turnId: updated.turns[updated.turns.length - 1].id,
-  };
+  return { threadId, turnId: turn.id };
 };
 
 type ThreadWithTurns = Prisma.ThreadGetPayload<{
