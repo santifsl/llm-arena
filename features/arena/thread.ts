@@ -1,4 +1,4 @@
-import type { CallMetrics } from "@/features/model-call/types";
+import type { CallMetrics, FailureKind } from "@/features/model-call/types";
 
 /**
  * What a screen is handed after a thread has been read out of the database.
@@ -9,6 +9,13 @@ import type { CallMetrics } from "@/features/model-call/types";
  * mapper's shape.
  */
 
+/**
+ * `streaming` means the call is still running, and says nothing about whether
+ * this browser is the one receiving it. A lane driving its own stream is
+ * streaming, and so is an answer somebody else started that has not ended yet,
+ * which is what a visitor sees when they open a shared link mid-race. The card
+ * tells those two apart by whether it is being fed, not by this value.
+ */
 export type AnswerState = "streaming" | "complete" | "failed";
 
 export type AnswerView = {
@@ -16,6 +23,11 @@ export type AnswerView = {
   readonly modelId: string;
   readonly state: AnswerState;
   readonly text: string;
+  /**
+   * Why it failed, in the only terms a card is allowed to say. Null unless the
+   * answer failed, and never the free-text reason, which stays in the log.
+   */
+  readonly failure: FailureKind | null;
   /** Null until the model call ends, and on a call that never produced one. */
   readonly metrics: CallMetrics | null;
 };
@@ -35,6 +47,18 @@ export type ThreadView = {
   readonly turns: readonly TurnView[];
 };
 
+/**
+ * One row of the sidebar's list: enough to name a thread and link to it, and
+ * nothing else. A list of twenty threads has no business dragging every turn,
+ * answer, and vote along with it.
+ */
+export type ThreadSummary = {
+  readonly id: string;
+  readonly title: string;
+  /** Last activity, which is what the list is ordered by. */
+  readonly updatedAt: Date;
+};
+
 /** Which models a thread is currently racing: whoever answered the last turn. */
 export const currentModelIds = (thread: ThreadView): readonly string[] =>
   thread.turns.at(-1)?.answers.map((answer) => answer.modelId) ?? [];
@@ -42,6 +66,13 @@ export const currentModelIds = (thread: ThreadView): readonly string[] =>
 /** A turn is votable once two of its models have actually answered. */
 export const completedAnswerCount = (turn: TurnView): number =>
   turn.answers.filter((answer) => answer.state === "complete").length;
+
+/**
+ * What a thread is called before its first prompt has named it. The column is
+ * nullable, and both readers, the screen and the sidebar, say the same thing
+ * about a null.
+ */
+export const UNTITLED_THREAD = "Untitled thread";
 
 const TITLE_LIMIT = 60;
 

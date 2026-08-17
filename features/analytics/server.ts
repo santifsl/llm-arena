@@ -4,6 +4,7 @@ import { PostHog } from "posthog-node";
 import { publicEnv } from "@/env";
 import type { CallMetrics } from "@/features/model-call/types";
 import { processSingleton } from "@/singleton";
+import { errorLog } from "@/lib/errors";
 
 /**
  * The funnel, captured on the server rather than in the browser.
@@ -52,10 +53,9 @@ export const captureArenaEvent = (
   try {
     analytics().capture({ distinctId, event, properties });
   } catch (error) {
-    console.error("[arena] could not capture an analytics event", {
-      event,
-      error,
-    });
+    console.error(
+      `[arena] could not capture an analytics event ${event}: ${errorLog(error)}`,
+    );
   }
 };
 
@@ -117,9 +117,8 @@ export const captureModelCall = async ({
       error,
     });
   } catch (failure) {
-    console.error("[arena] could not capture a model call", {
-      answerId,
-      failure,
-    });
+    console.error(
+      `[arena] could not capture a model call ${answerId}: ${errorLog(failure)}`,
+    );
   }
 };

@@ -107,8 +107,8 @@ export async function POST(request: Request) {
         metrics,
       });
     },
-    onFail: async (reason) => {
-      if (!(await failAnswer(answerId, claimId, reason))) return;
+    onFail: async (reason, kind) => {
+      if (!(await failAnswer(answerId, claimId, reason, kind))) return;
 
       // The reason is kept for the log and for the row. It is a property of an
       // analytics event too, because a model failing is something worth seeing
@@ -117,6 +117,10 @@ export async function POST(request: Request) {
         answer_id: answerId,
         model_id: context.modelId,
         reason,
+        // Worth a property of its own: "how often does the arena run out of
+        // free requests" is a different question from "which models fail", and
+        // a free-text reason is not something a funnel can group by.
+        failure_kind: kind,
       });
 
       await captureModelCall({

@@ -6,9 +6,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 
-import { PLACEHOLDER_THREADS } from "@/features/placeholder/data";
 import { useShell } from "@/features/shell/app-shell";
 import { ThemeToggle } from "@/features/shell/theme-toggle";
+import type { SidebarThread } from "@/features/shell/threads";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -30,7 +30,12 @@ const FOCUSABLE = [
 const isActive = (pathname: string, href: string): boolean =>
   href === "/" ? pathname === "/" : pathname.startsWith(href);
 
-export const Sidebar = () => {
+export const Sidebar = ({
+  threads,
+}: {
+  /** This person's threads, read on the server. Null if that read failed. */
+  readonly threads: readonly SidebarThread[] | null;
+}) => {
   const { collapsed, drawerOpen, closeDrawer } = useShell();
   const pathname = usePathname();
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -161,24 +166,49 @@ export const Sidebar = () => {
           New thread
         </Link>
 
-        {isLoaded && isSignedIn && (
+        {isLoaded && isSignedIn && threads === null && (
+          <p className="mt-2 px-5 text-sm text-ink-dim">
+            Your threads could not be loaded. Reload the page to try again.
+          </p>
+        )}
+
+        {isLoaded && isSignedIn && threads?.length === 0 && (
+          <p className="mt-2 px-5 text-sm text-ink-dim">
+            Send a prompt and it shows up here.
+          </p>
+        )}
+
+        {isLoaded && isSignedIn && threads !== null && threads.length > 0 && (
           <ul className="mt-1 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-4">
-            {PLACEHOLDER_THREADS.map((thread) => (
-              <li key={thread.id}>
-                <Link
-                  href="/"
-                  onClick={closeDrawer}
-                  className="flex flex-col rounded-sm px-2.5 py-2 hover:bg-surface-raised"
-                >
-                  <span className="truncate text-sm text-ink-dim">
-                    {thread.name}
-                  </span>
-                  <span className="numeral text-[0.625rem] text-ink-dim/70">
-                    {thread.updatedLabel}
-                  </span>
-                </Link>
-              </li>
-            ))}
+            {threads.map((thread) => {
+              const active = pathname === `/t/${thread.id}`;
+
+              return (
+                <li key={thread.id}>
+                  <Link
+                    href={`/t/${thread.id}`}
+                    onClick={closeDrawer}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "flex flex-col rounded-sm px-2.5 py-2 hover:bg-surface-raised",
+                      active && "bg-surface-raised",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "truncate text-sm",
+                        active ? "text-ink" : "text-ink-dim",
+                      )}
+                    >
+                      {thread.title}
+                    </span>
+                    <span className="numeral text-[0.625rem] text-ink-dim/70">
+                      {thread.updatedLabel}
+                    </span>
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
         )}
 

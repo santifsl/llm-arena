@@ -18,15 +18,30 @@ export type CallMetrics = {
   readonly costUsd: number;
 };
 
+/**
+ * Why a call failed, in the only terms a screen is allowed to speak. Mirrors
+ * the `AnswerFailure` enum one to one, for the same reason `CallMetrics`
+ * mirrors its columns: the live card and the stored row must never be able to
+ * say different things about the same call.
+ */
+export type FailureKind = "provider" | "quota";
+
 /** Custom data parts this app streams alongside the model's text. */
 export type ArenaDataParts = {
   readonly metrics: CallMetrics;
+  /**
+   * Sent only when a call fails, and only to tell the card which sentence to
+   * use. The row is written by the server either way; this is what lets the
+   * live card say the same thing without waiting for a reload.
+   */
+  readonly failure: { readonly kind: FailureKind };
 };
 
 export type ArenaUIMessage = UIMessage<unknown, ArenaDataParts>;
 
 /** One data part id per stream, so a later write replaces rather than appends. */
 export const METRICS_PART_ID = "metrics";
+export const FAILURE_PART_ID = "failure";
 
 /**
  * The longest one model call may run before it is aborted and the answer is

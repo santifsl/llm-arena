@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/popover";
 import {
   MAX_SELECTED_MODELS,
-  findArenaModel,
+  modelIdentity,
   type ArenaModel,
 } from "@/features/models/catalog";
 import { formatContextTokens } from "@/features/models/format";
@@ -86,9 +86,12 @@ export const Composer = ({
 
       <div className="flex flex-wrap items-center gap-2 border-t border-rule px-3 py-2.5">
         <ul className="flex flex-wrap items-center gap-2">
+          {/* A chip is rendered even for a model the catalog no longer lists,
+              because an old thread can carry one. Dropping the chip would leave
+              a person unable to remove the very model that is making their
+              prompt refused, with nothing on screen explaining why. */}
           {selectedModelIds.map((modelId) => {
-            const model = findArenaModel(models, modelId);
-            if (model === undefined) return null;
+            const model = modelIdentity(models, modelId);
             return (
               <li key={modelId}>
                 <span className="inline-flex items-center gap-1.5 rounded-sm border border-rule py-1 pr-1 pl-1.5 text-xs">
