@@ -27,6 +27,11 @@ import { processSingleton } from "@/singleton";
  *
  * This does not pre-open anything. The first call after the process starts
  * still pays full price; every call after it stops paying repeatedly.
+ *
+ * What it does not do, and was once wrongly credited with doing, is keep the
+ * *database* available. Holding a connection open is not the same as the thing
+ * on the other end being awake, and the difference is measured in
+ * `withColdStartRetry`, which is where that problem is actually handled.
  */
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -44,6 +49,14 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
  * These are deliberately generous rather than merely sufficient. They are a
  * backstop against a slow link, not a licence for slow transactions: the fix
  * for a transaction that needs this much time is a shorter transaction.
+ *
+ * `maxWait` is deliberately *not* raised far enough to cover a suspended
+ * database waking up, which is a separate problem measured in
+ * `withColdStartRetry` and worth about twenty seconds. A budget that generous
+ * would stop meaning "this is taking unreasonably long", which is the only
+ * thing a budget is for, and every genuinely stuck transaction would take that
+ * long to admit it. Waking the database is handled where it belongs, outside
+ * the transaction, rather than by making every failure slower.
  */
 const TRANSACTION_BUDGET = { maxWait: 10_000, timeout: 20_000 } as const;
 

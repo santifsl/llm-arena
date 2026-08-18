@@ -621,8 +621,52 @@ _That also removed a latent race nobody had reported._ The turn's id used to be 
 _What was considered and rejected: folding the turn count into the locking query._ One fewer round trip, and incorrect. A scalar subquery would be evaluated against the snapshot taken before the lock was granted, which reintroduces precisely the index race the `FOR UPDATE` exists to prevent. The count stays a separate statement after the lock. Noted here because it is an obvious-looking optimisation and the next person to read this function will think of it.
 
 - [x] The transaction budget, the warm pool, and the shorter `startTurn`, built and `pnpm verify` clean, 2026-08-17
-- [ ] Checked by eye in a real browser: send a prompt after leaving the app idle for several minutes, which is the exact condition that produced P2028
+- [x] Checked by eye in a real browser: send a prompt after leaving the app idle for several minutes, which is the exact condition that produced P2028 — **it failed, and the entry below is why**, 2026-08-17
 - [ ] `startTurn` returning `null` for a thread that is missing or not yours lands on the same "could not be sent" sentence as a genuine crash. Two different things a person would act on differently. Deliberately left for later, 2026-08-17
+
+**P2028 again, and the first diagnosis was wrong about the cause, 2026-08-17.**
+
+_The same error came back, in the same place, with the fix still in the file._ Two failures thirteen seconds apart, and the log's own timestamps are what cracked it: `00:02:31.367` an Arcjet error, `00:02:41.373` the P2028. Ten point zero seconds, which is `maxWait` exactly. So the budget was not merely exceeded by a little, it was spent in full and to the millisecond, which a 966ms handshake cannot explain no matter how slow the link.
+
+_What the earlier entry got right and what it got wrong._ Right: P2028 here is the failure to _start_, `maxWait` is the budget, and it fails after a quiet spell. Wrong: the cause. The handshake theory was testable and it is false. Measured against this project's own database, with the pool configured exactly as it ships:
+
+| when                           | acquire from pool | `SELECT 1`  |
+| ------------------------------ | ----------------- | ----------- |
+| first contact after a long gap | 1214ms            | **18641ms** |
+| immediately after              | 0ms               | 182ms       |
+| after 30s idle                 | 0ms               | 144ms       |
+| after 240s idle                | 0ms               | **10887ms** |
+
+_The 240s row is the whole answer._ Taking the connection cost 0ms — the warm pool worked exactly as designed, on the very same connection — and the query behind it still took 10.9 seconds. The latency is entirely on the far side. Prisma Postgres suspends a database that has been left alone, and waking it costs ten to nineteen seconds, against 209ms warm. `BEGIN` lands in the middle of that resume and blows `maxWait` before a single statement of ours runs. No client-side pooling can help, because there is no connection to open; `min: 1` was warming the one thing that was never cold.
+
+_Why the first measurement missed it._ It was taken against a database that was already awake, so it measured the handshake and nothing else. The suspend was never in the numbers, and the budget was sized against the wrong worst case.
+
+_The fix pays the resume outside the transaction._ `withColdStartRetry` catches only a failure to start, runs an unbudgeted `SELECT 1` that takes no lock and can wait as long as the database needs, then retries once. Retrying is safe because P2028-on-start means nothing was written. `maxWait` deliberately stays at ten seconds: raising it past a resume would make every genuinely stuck transaction take twenty seconds to admit it, and a budget that generous stops meaning anything. The warm path never throws, so it pays nothing. `castVote` is wrapped too — reading for a while and then voting meets a suspended database on exactly the same terms.
+
+_Only the failure to start is retried, and the discriminator is the message, not the code._ P2028 also covers a body that overran `timeout`, which is a slow transaction rather than a sleeping database. Confirmed against Prisma's own runtime strings: the start failure is `Unable to start a transaction in the given time.`, the others are `Transaction already closed`. This must not become a general retry.
+
+_The Arcjet line in the same window was a symptom, not a cause, and the distinction matters._ Both failed in the same twenty seconds and neither caused the other: the decision had already failed open and returned before `startTurn` began, and they talk to different hosts. They share a trigger — the same idle gap. The dashboard records `[deadline_exceeded] the operation timed out`, and the SDK's deadline is 500ms in production, 1s in development. That is too tight here for a reason specific to this app: `detectPromptInjection` has no local implementation, it returns `NOT_RUN` and needs a real round trip, and Arcjet drops its HTTP/2 session after 340 seconds, so the first prompt after a quiet spell redoes a TLS handshake inside that budget too. Every ERROR on the site is this, across all three clients.
+
+_So the deadline is 3s now, on one shared remote client._ Measured cold at 431ms on a healthy network, which is why it usually works and occasionally does not: the old budget left about 570ms of headroom. Sharing the client also means one warm HTTP/2 session for all three entry points instead of three idling out separately. Every `deadline_exceeded` was a request that ran with no budget charged, no injection check and no bot detection, so the trade — a little latency on a cold path for rules that actually run — is the right way round.
+
+- [x] `withColdStartRetry` on both transactions, the Arcjet deadline, and the corrected comments, `pnpm verify` clean, 2026-08-17
+- [ ] Checked by hand, and this one genuinely has to be a person: leave the app idle for five minutes, send a prompt, and confirm it succeeds slowly rather than failing. The dev server must be restarted first — an HMR update failed mid-edit and a stale process will not be running this code.
+- [ ] Watch whether `deadline_exceeded` actually stops appearing on the Arcjet site. The 3s figure is reasoned from one cold measurement, not proven, and if it still fires the answer is that the network is worse than 3s rather than that the deadline is wrong.
+
+**The wait is now shown rather than hidden, decided and built 2026-08-17.**
+
+_The resume is accepted, not fought._ `withColdStartRetry` already stops a suspended database from failing a prompt, so what is left is ten to twenty seconds where the submit is genuinely working and the screen says nothing. The send button is disabled and there is no lane on screen yet, because no turn exists to render one, so the only honest reading available to a person is that the click did not register. That is a UI gap, not a latency bug, and the fix belongs in the browser.
+
+_It is a clock, not a diagnosis._ `useSlowPending` flips true when a pending call passes 2.5 seconds and false the moment it settles, and `ArenaScreen` renders one `role="status"` line above the composer while it is true. The browser cannot distinguish a sleeping database from a slow network or a busy host, so the copy says the call is still working and offers the cold start as the likely reason, rather than naming it as fact. 2.5 seconds keeps the line off screen for every healthy round trip — the warm path measures 209ms — while landing well before the ten-second floor of a real resume.
+
+_Only the two server actions, deliberately._ Submit and retry both hold a transaction with nothing behind them yet. The model streams are excluded: a lane that is running already shows its own trace, its own elapsed clock, and its tokens arriving, so a second "this is slow" line there would explain something the screen is already explaining better.
+
+_It is not an error, and the markup says so._ `role="status"` rather than `role="alert"`, dim text rather than `text-fail`, and no retry action, because nothing has failed yet. It is suppressed while a `notice` is on screen, so a refusal and an explanation of a wait never stack up as two contradictory sentences about the same submission.
+
+- [x] `features/arena/use-slow-pending.ts`, the status line in `ArenaScreen`, and `pnpm verify` clean, 2026-08-17
+- [ ] Checked by hand, folded into the idle test above: after five minutes idle, the line appears a couple of seconds into the submit and disappears when the lanes mount; and a normal warm prompt never shows it at all
+
+_What review found: a rejected action locked the composer, and this change made that worse._ Every action in `actions.ts` answers rather than throws, so the browser only ever handled `ok: false`. The call itself can still fail — the network goes, the server does, or a deployment moves under an open tab — and a rejection escaping `send` skipped `setSubmitting(false)` and the composer's own `setSending(false)`. The send button stayed disabled until a reload. Adding the slow line made the same bug louder rather than causing it: the "still working" sentence would sit there for good, describing a call that had already died. Both flags now clear in a `finally`, the failure becomes the same refusal shape the actions return so there is one path rather than two, and it is reported to PostHog under its own scope. `retry` had the identical shape and is fixed with it.
 
 **The approach, decided 2026-08-15.**
 

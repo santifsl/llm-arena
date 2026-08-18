@@ -1,4 +1,5 @@
 import arcjet, {
+  createRemoteClient,
   detectBot,
   detectPromptInjection,
   request as currentRequest,
@@ -62,6 +63,43 @@ import { processSingleton } from "@/singleton";
 const BURST_PROMPTS = 10;
 const PROMPTS_PER_HOUR = 5;
 
+/**
+ * How long Arcjet may take to reach a decision before the request is allowed
+ * through without one.
+ *
+ * The SDK defaults this to 500ms in production and 1s in development, and that
+ * is too tight here for a reason particular to this app: `detectPromptInjection`
+ * has no local implementation. Every other rule can be answered on this machine,
+ * but that one returns `NOT_RUN` locally and needs a real round trip, so the
+ * whole submit decision is only ever as fast as the network. Arcjet also lets
+ * its HTTP/2 session go idle after 340 seconds, so the first prompt after a
+ * quiet spell has to redo a TLS handshake inside that budget too.
+ *
+ * The observed result was a steady trickle of `deadline_exceeded` in the
+ * dashboard, every one of which is a request that ran unprotected: no budget
+ * charged, no injection check, no bot detection. Three seconds is far longer
+ * than a healthy decision needs and still far shorter than a person waits for
+ * three models, and trading a little latency on a cold path for rules that
+ * actually run is the right way round.
+ *
+ * This does not weaken the fail-open guarantee below, it just stops it firing
+ * over ordinary network weather.
+ */
+const DECISION_TIMEOUT_MS = 3_000;
+
+/**
+ * One transport for all three clients, which is where the timeout is actually
+ * configurable: it belongs to the Decide API client rather than to a rule set.
+ *
+ * Sharing it is the other half of the point. Each client would otherwise open
+ * its own HTTP/2 session to the same host, so the arena would keep three of
+ * them warm instead of one and each would idle out on its own schedule. One
+ * shared session is warmed by whichever entry point is used first.
+ */
+const remoteClient = processSingleton("arcjet-transport", () =>
+  createRemoteClient({ timeout: DECISION_TIMEOUT_MS }),
+);
+
 // No safelist anywhere here: every real caller is a signed-in person in a
 // browser, and nothing legitimate scripts the arena.
 const baseRules = [
@@ -72,6 +110,7 @@ const baseRules = [
 const createSubmitClient = () =>
   arcjet({
     key: serverEnv().ARCJET_KEY,
+    client: remoteClient(),
     rules: [
       ...baseRules,
       tokenBucket({
@@ -86,7 +125,11 @@ const createSubmitClient = () =>
   });
 
 const createStreamClient = () =>
-  arcjet({ key: serverEnv().ARCJET_KEY, rules: baseRules });
+  arcjet({
+    key: serverEnv().ARCJET_KEY,
+    client: remoteClient(),
+    rules: baseRules,
+  });
 
 /**
  * Who is allowed to be a bot on a shared thread.
@@ -133,6 +176,7 @@ const READS_PER_MINUTE = 120;
 const createThreadClient = () =>
   arcjet({
     key: serverEnv().ARCJET_KEY,
+    client: remoteClient(),
     rules: [
       shield({ mode: "LIVE" }),
       detectBot({ mode: "LIVE", allow: [...THREAD_READERS] }),

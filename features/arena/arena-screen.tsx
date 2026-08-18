@@ -20,7 +20,9 @@ import {
   type ThreadView,
   type TurnView,
 } from "@/features/arena/thread";
+import { posthog } from "@/features/analytics/posthog";
 import { ShareLink } from "@/features/arena/share-link";
+import { useSlowPending } from "@/features/arena/use-slow-pending";
 import { SharedThreadView } from "@/features/arena/shared-thread-view";
 import {
   MAX_SELECTED_MODELS,
@@ -60,6 +62,39 @@ const COLUMNS: Readonly<Record<number, string>> = {
 };
 
 const CLOCK_INTERVAL_MS = 100;
+
+/**
+ * How long a submit or a retry may run before the wait is worth explaining.
+ * Long enough that a healthy round trip never reaches it, short enough that
+ * nobody has decided the button is broken by the time it does.
+ */
+const SLOW_PENDING_MS = 2500;
+
+/**
+ * The sentence for an action that never came back with an answer of its own.
+ *
+ * Every action in `actions.ts` answers rather than throws, so reaching this
+ * means the call itself failed: the network went, the server did, or the
+ * deployment moved underneath an open tab. None of that is something a person
+ * can be told anything useful about, and all of it is worth trying again.
+ */
+const UNREACHABLE = "That didn't reach the arena. Try again.";
+
+/**
+ * The same shape the actions answer with, so a call that failed and a call that
+ * refused travel the same path from here on rather than needing two branches.
+ */
+const refusal = (message: string) =>
+  ({ ok: false, message }) as const satisfies {
+    readonly ok: false;
+    readonly message: string;
+  };
+
+const reportClientException = (error: unknown, scope: string) => {
+  if (!posthog.__loaded) return;
+
+  posthog.captureException(error, { scope });
+};
 
 const setWinner = (
   thread: ThreadView | null,
@@ -125,6 +160,18 @@ export const ArenaScreen = ({
   const [now, setNow] = useState(() => Date.now());
   const [notice, setNotice] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  /**
+   * A submit and a retry are both a server action holding a database
+   * transaction with nothing on screen behind it yet, which is the wait worth
+   * explaining. Once a turn exists its lanes show their own traces, so a
+   * running stream needs no such line.
+   */
+  const slow = useSlowPending(
+    submitting || retryingId !== null,
+    SLOW_PENDING_MS,
+  );
 
   /**
    * Set when this session creates a thread, and cleared once its list entry has
@@ -183,12 +230,24 @@ export const ArenaScreen = ({
 
   const send = async (prompt: string): Promise<boolean> => {
     setNotice(null);
+    setSubmitting(true);
 
+    // The action answers rather than throws, so this catches the call failing
+    // instead: a rejection escaping here would leave `submitting` true, which
+    // is the composer disabled and a "still working" line under it, both of
+    // them permanent until a reload. The one failure a person cannot retry is
+    // the one that took the retry away.
     const result = await submitPrompt({
       threadId: thread?.id ?? null,
       prompt,
       modelIds: selectedModelIds,
-    });
+    })
+      .catch((error: unknown) => {
+        reportClientException(error, "prompt-submit");
+
+        return refusal(UNREACHABLE);
+      })
+      .finally(() => setSubmitting(false));
 
     if (!result.ok) {
       setNotice(result.message);
@@ -225,9 +284,13 @@ export const ArenaScreen = ({
     setNotice(null);
     setRetryingId(answer.id);
 
-    const result = await retryModel(answer.id);
+    const result = await retryModel(answer.id)
+      .catch((error: unknown) => {
+        reportClientException(error, "answer-retry");
 
-    setRetryingId(null);
+        return refusal(UNREACHABLE);
+      })
+      .finally(() => setRetryingId(null));
 
     if (!result.ok) {
       setNotice(result.message);
@@ -420,6 +483,15 @@ export const ArenaScreen = ({
             {notice !== null && (
               <p role="alert" className="text-sm text-fail">
                 {notice}
+              </p>
+            )}
+            {/* Only ever an explanation, never an error: the call is still
+                running, and the retry it might need belongs to whatever
+                actually fails. */}
+            {slow && notice === null && (
+              <p role="status" className="text-sm text-ink-dim">
+                Still working. This can take a moment while the database wakes
+                up.
               </p>
             )}
             <Composer

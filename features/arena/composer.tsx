@@ -48,8 +48,11 @@ export const Composer = ({
     if (!ready || blocked) return;
 
     setSending(true);
-    const accepted = await onSubmit(prompt);
-    setSending(false);
+
+    // `onSubmit` is somebody else's promise, and a rejected one escaping here
+    // would leave this button disabled for good. It clears the flag whatever
+    // happens and lets the failure carry on to whoever owns the sentence.
+    const accepted = await onSubmit(prompt).finally(() => setSending(false));
 
     if (accepted) setPrompt("");
   };
