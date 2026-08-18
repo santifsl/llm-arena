@@ -3,13 +3,15 @@
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 
-import { captureArenaEvent } from "@/features/analytics/server";
+import {
+  captureArenaEvent,
+  reportServerException,
+} from "@/features/analytics/server";
 import {
   isCallableModelId,
   MAX_SELECTED_MODELS,
 } from "@/features/models/catalog";
 import { protectPromptSubmission } from "@/features/security/arcjet";
-import { errorLog } from "@/lib/errors";
 
 import { castVote, reopenAnswer, startTurn, type VoteRefusal } from "./queries";
 import type { AnswerView, ThreadView } from "./thread";
@@ -89,7 +91,10 @@ export const submitPrompt = async ({
     prompt: text,
     modelIds,
   }).catch((error: unknown) => {
-    console.error(`[arena] could not start a turn: ${errorLog(error)}`);
+    reportServerException("could not start a turn", error, {
+      thread_id: threadId,
+      model_count: modelIds.length,
+    });
 
     return null;
   });
@@ -193,15 +198,28 @@ export const retryModel = async (
 
   const answer = await reopenAnswer(answerId, userId).catch(
     (error: unknown) => {
-      console.error(`[arena] could not reopen an answer: ${errorLog(error)}`);
+      reportServerException("could not reopen an answer", error, {
+        answer_id: answerId,
+      });
 
       return null;
     },
   );
 
-  return answer === null
-    ? refuse(
-        "That model could not be run again. Reload the page and try again.",
-      )
-    : { ok: true, answer };
+  if (answer === null) {
+    return refuse(
+      "That model could not be run again. Reload the page and try again.",
+    );
+  }
+
+  // Captured here rather than in the browser so it sits in the same funnel as
+  // the failure it answers. It is also what makes `answer_abandoned` readable:
+  // a retry aborts the old request, so without this event every retry would
+  // look like somebody walking away mid-answer.
+  captureArenaEvent(userId, "answer_retried", {
+    answer_id: answerId,
+    model_id: answer.modelId,
+  });
+
+  return { ok: true, answer };
 };

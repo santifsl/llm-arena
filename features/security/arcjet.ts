@@ -9,7 +9,7 @@ import arcjet, {
 } from "@arcjet/next";
 
 import { serverEnv } from "@/env";
-import { errorLog } from "@/lib/errors";
+import { reportServerException } from "@/features/analytics/server";
 import { processSingleton } from "@/singleton";
 
 /**
@@ -266,9 +266,7 @@ const decide = async (
   rateLimitDenial: (retryAfterSeconds: number | undefined) => ArenaDenial,
 ): Promise<ArenaDenial | null> => {
   const decision = await run().catch((error: unknown) => {
-    console.error(
-      `[arena] arcjet could not reach a decision: ${errorLog(error)}`,
-    );
+    reportServerException("arcjet could not reach a decision", error);
 
     return null;
   });

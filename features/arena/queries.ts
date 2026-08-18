@@ -12,7 +12,7 @@ import {
   type CallMetrics,
   type FailureKind,
 } from "@/features/model-call/types";
-import { errorLog } from "@/lib/errors";
+import { reportServerException } from "@/features/analytics/server";
 
 import {
   titleFromPrompt,
@@ -385,6 +385,7 @@ export const claimAnswerForStream = async (
   claimId: string,
 ): Promise<{
   readonly modelId: string;
+  readonly turnId: string;
   readonly messages: readonly ModelMessage[];
 } | null> => {
   // The claim is the ownership check and the mutual exclusion in one statement.
@@ -451,8 +452,22 @@ export const claimAnswerForStream = async (
           ];
     });
 
-  return { modelId: answer.modelId, messages };
+  return { modelId: answer.modelId, turnId: answer.turnId, messages };
 };
+
+/**
+ * How many answers on this turn have finished.
+ *
+ * Two is the number that matters: it is the rule `castVote` enforces, and it is
+ * the moment a person is first offered a pick. Counted here rather than
+ * inferred from the answers already in the browser, because the browser is only
+ * one of the places a turn can be watched from and a tab that closed mid-race
+ * still produces the completion that crosses the line.
+ */
+export const countCompleteAnswers = async (turnId: string): Promise<number> =>
+  database().answer.count({
+    where: { turnId, status: AnswerStatus.COMPLETE },
+  });
 
 /**
  * The model answered. Text and every measured number land in one write.
@@ -590,7 +605,10 @@ export const castVote = async ({
     .catch((error: unknown) => {
       if (isUniqueViolation(error)) return "already-voted";
 
-      console.error(`[arena] could not record a vote: ${errorLog(error)}`);
+      reportServerException("could not record a vote", error, {
+        turn_id: turnId,
+        answer_id: answerId,
+      });
 
       return "failed";
     });

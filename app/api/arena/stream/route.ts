@@ -5,6 +5,7 @@ import { consumeStream, createUIMessageStreamResponse } from "ai";
 import {
   claimAnswerForStream,
   completeAnswer,
+  countCompleteAnswers,
   failAnswer,
 } from "@/features/arena/queries";
 import { streamRequestSchema } from "@/features/model-call/request";
@@ -82,6 +83,30 @@ export async function POST(request: Request) {
     );
   }
 
+  // Whether this call has reached an ending of any kind. Read by the
+  // disconnect listener below, which is the one thing here that fires from
+  // outside the stream and therefore cannot be told any other way.
+  let settled = false;
+
+  // A tab that closes mid-answer is invisible to every other event this route
+  // sends: the server keeps draining its own copy of the stream on purpose, so
+  // the answer still lands and `answer_completed` still fires exactly as if
+  // somebody had watched it. Without this, "people leave before the models
+  // finish" is not a question the funnel can ask at all.
+  //
+  // A retry aborts its own request too, and is counted here as well, because
+  // the server genuinely cannot tell the two apart. `answer_retried` is the
+  // event that separates them, which is why it exists.
+  request.signal.addEventListener("abort", () => {
+    if (settled) return;
+
+    captureArenaEvent(userId, "answer_abandoned", {
+      answer_id: answerId,
+      model_id: context.modelId,
+      turn_id: context.turnId,
+    });
+  });
+
   const stream = streamModelAnswer({
     modelId: context.modelId,
     messages: context.messages,
@@ -90,11 +115,23 @@ export async function POST(request: Request) {
       // already moved on from, so it is not worth an event either.
       if (!(await completeAnswer(answerId, claimId, text, metrics))) return;
 
+      settled = true;
+
       captureArenaEvent(userId, "answer_completed", {
         answer_id: answerId,
         model_id: context.modelId,
         ...metrics,
       });
+
+      // The moment a vote becomes possible, sent once. Exactly two, not two or
+      // more: this fires on the completion that crosses the line, so a third
+      // model finishing afterwards does not report the turn as newly votable a
+      // second time.
+      if ((await countCompleteAnswers(context.turnId)) === 2) {
+        captureArenaEvent(userId, "turn_ready_for_vote", {
+          turn_id: context.turnId,
+        });
+      }
 
       // PostHog's own LLM analytics, which is a different thing from the
       // funnel: tokens, cost, and latency for this one call.
@@ -109,6 +146,8 @@ export async function POST(request: Request) {
     },
     onFail: async (reason, kind) => {
       if (!(await failAnswer(answerId, claimId, reason, kind))) return;
+
+      settled = true;
 
       // The reason is kept for the log and for the row. It is a property of an
       // analytics event too, because a model failing is something worth seeing

@@ -21,9 +21,9 @@ import {
   type TurnView,
 } from "@/features/arena/thread";
 import { ShareLink } from "@/features/arena/share-link";
+import { SharedThreadView } from "@/features/arena/shared-thread-view";
 import {
   MAX_SELECTED_MODELS,
-  defaultSelectedModelIds,
   modelIdentity,
   type ArenaModel,
 } from "@/features/models/catalog";
@@ -91,10 +91,17 @@ const replaceAnswer = (
 
 export const ArenaScreen = ({
   catalog,
+  defaultModelIds,
   initialThread,
   isOwner,
 }: {
   readonly catalog: readonly ArenaModel[] | null;
+  /**
+   * The trio a brand new thread opens with, decided on the server so a feature
+   * flag can move it. `null` on an existing thread, which has its own models
+   * and never looks at this.
+   */
+  readonly defaultModelIds: readonly string[] | null;
   readonly initialThread: ThreadView | null;
   /**
    * Whether this reader may use the thread as well as read it. Decided on the
@@ -108,7 +115,7 @@ export const ArenaScreen = ({
   const [selectedModelIds, setSelectedModelIds] = useState<readonly string[]>(
     () =>
       initialThread === null
-        ? defaultSelectedModelIds(models)
+        ? (defaultModelIds ?? [])
         : currentModelIds(initialThread),
   );
   /** Answer ids this session started, and when each one started. */
@@ -347,6 +354,15 @@ export const ArenaScreen = ({
 
   return (
     <>
+      {/* Renders nothing. A visitor reading somebody else's thread is the one
+          half of sharing the copy-link event cannot see. */}
+      {!isOwner && thread !== null && (
+        <SharedThreadView
+          threadId={thread.id}
+          turnCount={thread.turns.length}
+        />
+      )}
+
       <TopBar
         breadcrumb={["Arena", thread?.title ?? "New thread"]}
         trailing={

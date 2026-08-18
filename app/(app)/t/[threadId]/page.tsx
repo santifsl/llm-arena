@@ -6,9 +6,9 @@ import { cache } from "react";
 import { ArenaScreen } from "@/features/arena/arena-screen";
 import { loadThread } from "@/features/arena/queries";
 import { ThreadUnavailable } from "@/features/arena/thread-unavailable";
+import { reportServerException } from "@/features/analytics/server";
 import { loadArenaCatalog } from "@/features/models/catalog";
 import { protectSharedThread } from "@/features/security/arcjet";
-import { errorLog } from "@/lib/errors";
 
 /**
  * One thread, readable by anyone holding its link.
@@ -56,7 +56,9 @@ const guardRead = cache(protectSharedThread);
  */
 const readThread = cache(async (threadId: string) => {
   const found = await loadThread(threadId).catch((error: unknown) => {
-    console.error(`[arena] could not read a thread: ${errorLog(error)}`);
+    reportServerException("could not read a thread", error, {
+      thread_id: threadId,
+    });
 
     return null;
   });
@@ -116,6 +118,8 @@ export default async function ThreadPage({
   return (
     <ArenaScreen
       catalog={catalog}
+      // An existing thread carries its own models forward.
+      defaultModelIds={null}
       initialThread={found.thread}
       isOwner={found.isOwner}
     />
