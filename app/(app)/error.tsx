@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 
+import { RetryButton } from "@/components/retry-button";
 import { posthog } from "@/features/analytics/posthog";
 
 /**
@@ -40,13 +41,7 @@ export default function AppError({
         That screen didn&apos;t load. Try again, and if it keeps happening,
         reload the page.
       </p>
-      <button
-        type="button"
-        onClick={reset}
-        className="mt-3 inline-flex items-center gap-1.5 rounded-sm border border-rule px-2 py-1 text-xs text-ink hover:border-rust"
-      >
-        Try again
-      </button>
+      <RetryButton surface="app-render" action={reset} className="mt-3" />
     </div>
   );
 }

@@ -33,9 +33,12 @@ const payloadSchema = z.array(z.string().min(1)).min(1);
 /**
  * Reads the flag, and is never the reason a page does not render.
  *
- * The evaluation is a network call PostHog makes on our behalf, so it is
- * bounded by the caller running it alongside the catalog fetch rather than
- * after it, and by falling back rather than waiting on a retry.
+ * The evaluation is a network call, and it happens during a server render that
+ * cannot finish without it, so it is bounded twice over: the client sets a one
+ * second budget with no retry, in `features/analytics/server.ts`, and anything
+ * that budget cuts off arrives here as a rejection and becomes the fallback. A
+ * flag that is slow, misconfigured, or down costs a second at worst, and never
+ * the page.
  */
 export const resolveDefaultModelIds = async (
   catalog: readonly ArenaModel[] | null,

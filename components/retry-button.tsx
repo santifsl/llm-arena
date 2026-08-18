@@ -16,27 +16,35 @@ import { cn } from "@/lib/utils";
  * `ThreadUnavailable` had already flagged as the point at which it should
  * become shared.
  *
- * The retry is genuinely a retry in all three places, and for one reason: the
+ * Refreshing the route is the retry almost everywhere, and for one reason: the
  * catalog fetch, the thread read, and the leaderboard's counts all happen
- * during the server render, so refreshing the route runs the work again. A
- * component that owns the refresh can say that once instead of each caller
- * re-deciding it.
+ * during the server render, so refreshing runs the work again. A component that
+ * owns the refresh can say that once instead of each caller re-deciding it.
+ *
+ * `action` exists for the one place that is not true. A render that threw is
+ * recovered by the error boundary's own `reset`, not by a refresh, and that is
+ * the only difference between that screen and these three: the sentence, the
+ * button, the spinner, and the event are all the same, so the button is shared
+ * and only what it calls is passed in.
  *
  * Every press is captured, and `surface` is required rather than optional
- * because the whole value of the event is knowing which of the three failed. A
- * count of retries with no surface on it says only that something is broken.
- * Being pressed twice is a stronger signal than being pressed once, so the
- * attempt is counted too rather than deduplicated away.
+ * because the whole value of the event is knowing which one failed. A count of
+ * retries with no surface on it says only that something is broken. Being
+ * pressed twice is a stronger signal than being pressed once, so the attempt is
+ * counted too rather than deduplicated away.
  */
 
 /** Which failure a person is trying to get past. */
-export type RetrySurface = "catalog" | "thread" | "standings";
+export type RetrySurface = "catalog" | "thread" | "standings" | "app-render";
 
 export const RetryButton = ({
   surface,
+  action,
   className,
 }: {
   readonly surface: RetrySurface;
+  /** What trying again actually does. A route refresh unless given. */
+  readonly action?: () => void;
   readonly className?: string;
 }) => {
   const router = useRouter();
@@ -45,7 +53,7 @@ export const RetryButton = ({
   const retry = () => {
     posthog.capture("retry_clicked", { surface });
 
-    startRetry(() => router.refresh());
+    startRetry(() => (action ? action() : router.refresh()));
   };
 
   return (

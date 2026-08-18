@@ -456,18 +456,42 @@ export const claimAnswerForStream = async (
 };
 
 /**
- * How many answers on this turn have finished.
+ * Did this call turn the turn votable? True for exactly one caller, ever.
  *
- * Two is the number that matters: it is the rule `castVote` enforces, and it is
- * the moment a person is first offered a pick. Counted here rather than
- * inferred from the answers already in the browser, because the browser is only
- * one of the places a turn can be watched from and a tab that closed mid-race
- * still produces the completion that crosses the line.
+ * Two completed answers is the number that matters: it is the rule `castVote`
+ * enforces, and it is the moment a person is first offered a pick. It is
+ * counted here rather than inferred from the answers already in the browser,
+ * because the browser is only one of the places a turn can be watched from and
+ * a tab that closed mid-race still produces the completion that crosses the
+ * line.
+ *
+ * Counting alone is not enough, because the callers race. Three models finish
+ * whenever they finish, each counts right after writing its own answer, and a
+ * plain `count === 2` is wrong twice over: two completions landing together can
+ * both read two and send the event twice, and a third landing in between can
+ * push every reader past two so nobody sends it at all. So the count only
+ * decides whether the line has been crossed, and `readyForVoteAt` decides who
+ * says so: it moves from null once, and only the caller whose write applied is
+ * describing something that happened.
  */
-export const countCompleteAnswers = async (turnId: string): Promise<number> =>
-  database().answer.count({
+export const markTurnReadyForVote = async (
+  turnId: string,
+): Promise<boolean> => {
+  const complete = await database().answer.count({
     where: { turnId, status: AnswerStatus.COMPLETE },
   });
+
+  // Deliberately not `=== 2`: whoever reads the count last sees every answer
+  // that has landed, which may already be three.
+  if (complete < 2) return false;
+
+  const { count } = await database().turn.updateMany({
+    where: { id: turnId, readyForVoteAt: null },
+    data: { readyForVoteAt: new Date() },
+  });
+
+  return count > 0;
+};
 
 /**
  * The model answered. Text and every measured number land in one write.

@@ -32,6 +32,13 @@ const createClient = (): PostHog => {
     // event would never leave.
     flushAt: 1,
     flushInterval: 0,
+    // A flag read happens during a page render, so its latency is the page's
+    // latency. The SDK's own defaults are three seconds plus a retry, which is
+    // several seconds of a blank screen bought in exchange for an experiment
+    // nobody needs to see. One attempt, one second, and then the caller's
+    // fallback, which is a good answer rather than a degraded one.
+    featureFlagsRequestTimeoutMs: 1000,
+    featureFlagsRequestMaxRetries: 0,
   });
 };
 

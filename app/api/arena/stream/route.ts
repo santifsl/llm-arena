@@ -5,8 +5,8 @@ import { consumeStream, createUIMessageStreamResponse } from "ai";
 import {
   claimAnswerForStream,
   completeAnswer,
-  countCompleteAnswers,
   failAnswer,
+  markTurnReadyForVote,
 } from "@/features/arena/queries";
 import { streamRequestSchema } from "@/features/model-call/request";
 import { streamModelAnswer } from "@/features/model-call/stream-model-answer";
@@ -86,6 +86,11 @@ export async function POST(request: Request) {
   // Whether this call has reached an ending of any kind. Read by the
   // disconnect listener below, which is the one thing here that fires from
   // outside the stream and therefore cannot be told any other way.
+  //
+  // Set the instant a terminal handler starts, before it awaits anything: an
+  // abort that arrives while the completion is still being written describes a
+  // model that already finished, and reporting the same answer as both
+  // abandoned and completed is the one thing the funnel cannot recover from.
   let settled = false;
 
   // A tab that closes mid-answer is invisible to every other event this route
@@ -111,11 +116,11 @@ export async function POST(request: Request) {
     modelId: context.modelId,
     messages: context.messages,
     onComplete: async (text, metrics) => {
+      settled = true;
+
       // A write that no longer holds the claim describes a call the product has
       // already moved on from, so it is not worth an event either.
       if (!(await completeAnswer(answerId, claimId, text, metrics))) return;
-
-      settled = true;
 
       captureArenaEvent(userId, "answer_completed", {
         answer_id: answerId,
@@ -123,11 +128,10 @@ export async function POST(request: Request) {
         ...metrics,
       });
 
-      // The moment a vote becomes possible, sent once. Exactly two, not two or
-      // more: this fires on the completion that crosses the line, so a third
-      // model finishing afterwards does not report the turn as newly votable a
-      // second time.
-      if ((await countCompleteAnswers(context.turnId)) === 2) {
+      // The moment a vote becomes possible, sent once. Which of the racing
+      // completions gets to say so is settled in the database rather than here,
+      // because two of them finishing together would otherwise both claim it.
+      if (await markTurnReadyForVote(context.turnId)) {
         captureArenaEvent(userId, "turn_ready_for_vote", {
           turn_id: context.turnId,
         });
@@ -145,9 +149,9 @@ export async function POST(request: Request) {
       });
     },
     onFail: async (reason, kind) => {
-      if (!(await failAnswer(answerId, claimId, reason, kind))) return;
-
       settled = true;
+
+      if (!(await failAnswer(answerId, claimId, reason, kind))) return;
 
       // The reason is kept for the log and for the row. It is a property of an
       // analytics event too, because a model failing is something worth seeing
