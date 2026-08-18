@@ -21,6 +21,7 @@ import {
   type TurnView,
 } from "@/features/arena/thread";
 import { ShareLink } from "@/features/arena/share-link";
+import { useSlowPending } from "@/features/arena/use-slow-pending";
 import { SharedThreadView } from "@/features/arena/shared-thread-view";
 import {
   MAX_SELECTED_MODELS,
@@ -60,6 +61,13 @@ const COLUMNS: Readonly<Record<number, string>> = {
 };
 
 const CLOCK_INTERVAL_MS = 100;
+
+/**
+ * How long a submit or a retry may run before the wait is worth explaining.
+ * Long enough that a healthy round trip never reaches it, short enough that
+ * nobody has decided the button is broken by the time it does.
+ */
+const SLOW_PENDING_MS = 2500;
 
 const setWinner = (
   thread: ThreadView | null,
@@ -125,6 +133,18 @@ export const ArenaScreen = ({
   const [now, setNow] = useState(() => Date.now());
   const [notice, setNotice] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  /**
+   * A submit and a retry are both a server action holding a database
+   * transaction with nothing on screen behind it yet, which is the wait worth
+   * explaining. Once a turn exists its lanes show their own traces, so a
+   * running stream needs no such line.
+   */
+  const slow = useSlowPending(
+    submitting || retryingId !== null,
+    SLOW_PENDING_MS,
+  );
 
   /**
    * Set when this session creates a thread, and cleared once its list entry has
@@ -183,12 +203,15 @@ export const ArenaScreen = ({
 
   const send = async (prompt: string): Promise<boolean> => {
     setNotice(null);
+    setSubmitting(true);
 
     const result = await submitPrompt({
       threadId: thread?.id ?? null,
       prompt,
       modelIds: selectedModelIds,
     });
+
+    setSubmitting(false);
 
     if (!result.ok) {
       setNotice(result.message);
@@ -420,6 +443,15 @@ export const ArenaScreen = ({
             {notice !== null && (
               <p role="alert" className="text-sm text-fail">
                 {notice}
+              </p>
+            )}
+            {/* Only ever an explanation, never an error: the call is still
+                running, and the retry it might need belongs to whatever
+                actually fails. */}
+            {slow && notice === null && (
+              <p role="status" className="text-sm text-ink-dim">
+                Still working. This can take a moment while the database wakes
+                up.
               </p>
             )}
             <Composer

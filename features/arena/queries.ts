@@ -156,6 +156,80 @@ const turnWithAnswers = {
   vote: true,
 } satisfies Prisma.TurnInclude;
 
+const hasPrismaCode = (error: unknown, code: string): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { readonly code?: unknown }).code === code;
+
+/**
+ * A transaction that could not be *started* inside `maxWait`.
+ *
+ * P2028 covers the whole transaction API, so the code alone is not enough: a
+ * body that overran `timeout` reports P2028 too, and that is a slow transaction
+ * rather than a sleeping database. The message is what separates them, and only
+ * the failure to start is worth waking anything up for.
+ */
+const isTransactionStartTimeout = (error: unknown): boolean =>
+  hasPrismaCode(error, "P2028") &&
+  error instanceof Error &&
+  error.message.includes("Unable to start a transaction");
+
+/**
+ * Runs a transaction, and gives a sleeping database exactly one second chance.
+ *
+ * Prisma Postgres suspends a database that has been left alone, and waking it
+ * costs far more than any sane `maxWait`. Measured against this project's own
+ * database rather than assumed: a `SELECT 1` on an already-open, already-warm
+ * pooled connection took 10.9 seconds after four minutes of quiet, and 18.6
+ * seconds on the first contact after a longer gap, against 209ms warm. Since
+ * `maxWait` covers taking a connection and issuing `BEGIN`, that `BEGIN` lands
+ * in the middle of the resume and the transaction fails before a single
+ * statement of the app's own work runs.
+ *
+ * This is the correction to an earlier diagnosis, and it is worth being plain
+ * about which part was wrong, because the earlier fix is still in the file and
+ * still looks like it should cover this. The pool was warmed with `min: 1` and
+ * a five-minute idle timeout on the theory that the cost was a fresh TCP and
+ * TLS handshake. That theory was testable and it is false: in the measurement
+ * above, taking the connection from the pool cost 0ms — the warming worked
+ * exactly as designed — and the query behind it still took 10.9 seconds. The
+ * latency is entirely on the far side. No amount of client-side pooling can
+ * warm a database that has powered itself down, because there is no connection
+ * to open.
+ *
+ * So the resume is paid outside the transaction instead. `SELECT 1` takes no
+ * lock and answers to no budget, so it can wait however long the database needs
+ * without holding anything; by the time it returns, the database is awake and
+ * the retried transaction runs against a live one at ordinary speed.
+ *
+ * Retrying is safe rather than merely convenient, and for a specific reason:
+ * P2028 here means the transaction never started, so there is nothing written
+ * to be written twice. This is not a general retry and must not become one.
+ * Only a failure to start is caught, and only once. Anything else is somebody's
+ * real error and is rethrown untouched, and a second failure means the database
+ * is not merely asleep, which the caller should surface rather than keep
+ * hammering.
+ *
+ * The warm path pays nothing at all: it does not throw, so it never reaches any
+ * of this.
+ */
+const withColdStartRetry = async <T>(run: () => Promise<T>): Promise<T> =>
+  run().catch(async (error: unknown) => {
+    if (!isTransactionStartTimeout(error)) throw error;
+
+    console.warn(
+      "[arena] a transaction could not start in time, which is what a suspended database looks like; waking it and retrying once",
+    );
+
+    // Deliberately outside any transaction, and deliberately unbudgeted: this
+    // statement exists to be slow, and it is the only place in the app allowed
+    // to be.
+    await database().$queryRaw`SELECT 1`;
+
+    return run();
+  });
+
 /**
  * Starts a turn: the thread if there is not one yet, the turn, and one answer
  * row per selected model, all in a single transaction.
@@ -182,34 +256,36 @@ export const startTurn = async ({
   readonly thread: ThreadView;
   readonly turnId: string;
 } | null> => {
-  const appended = await database().$transaction(async (tx) => {
-    if (threadId === null) {
-      const created = await tx.thread.create({
-        data: { clerkUserId, title: titleFromPrompt(prompt) },
-        select: { id: true },
-      });
+  const appended = await withColdStartRetry(() =>
+    database().$transaction(async (tx) => {
+      if (threadId === null) {
+        const created = await tx.thread.create({
+          data: { clerkUserId, title: titleFromPrompt(prompt) },
+          select: { id: true },
+        });
 
-      return appendTurn(tx, created.id, prompt, modelIds);
-    }
+        return appendTurn(tx, created.id, prompt, modelIds);
+      }
 
-    // The row lock is what makes the turn index safe. Two submissions to the
-    // same thread would otherwise both count the turns before either insert
-    // commits, both pick the same index, and one would then be rejected by the
-    // unique on `(threadId, index)`, which is a valid prompt lost to a race.
-    // Two tabs do it, and so does pressing enter twice quickly, since the
-    // composer's guard is React state that has not re-rendered yet.
-    //
-    // Locking the thread also does the ownership check: a row comes back only
-    // if it is this person's. A brand new thread skips it, because nothing else
-    // can know its id yet.
-    const locked = await tx.$queryRaw<readonly { readonly id: string }[]>`
-      SELECT id FROM "Thread" WHERE id = ${threadId} AND "clerkUserId" = ${clerkUserId} FOR UPDATE
-    `;
+      // The row lock is what makes the turn index safe. Two submissions to the
+      // same thread would otherwise both count the turns before either insert
+      // commits, both pick the same index, and one would then be rejected by
+      // the unique on `(threadId, index)`, which is a valid prompt lost to a
+      // race. Two tabs do it, and so does pressing enter twice quickly, since
+      // the composer's guard is React state that has not re-rendered yet.
+      //
+      // Locking the thread also does the ownership check: a row comes back only
+      // if it is this person's. A brand new thread skips it, because nothing
+      // else can know its id yet.
+      const locked = await tx.$queryRaw<readonly { readonly id: string }[]>`
+        SELECT id FROM "Thread" WHERE id = ${threadId} AND "clerkUserId" = ${clerkUserId} FOR UPDATE
+      `;
 
-    if (locked.length === 0) return null;
+      if (locked.length === 0) return null;
 
-    return appendTurn(tx, threadId, prompt, modelIds);
-  });
+      return appendTurn(tx, threadId, prompt, modelIds);
+    }),
+  );
 
   if (appended === null) return null;
 
@@ -557,12 +633,6 @@ export type VoteRefusal =
   | "already-voted"
   | "failed";
 
-const hasPrismaCode = (error: unknown, code: string): boolean =>
-  typeof error === "object" &&
-  error !== null &&
-  "code" in error &&
-  (error as { readonly code?: unknown }).code === code;
-
 /** Postgres refusing a duplicate, which is a real outcome rather than a crash. */
 const isUniqueViolation = (error: unknown): boolean =>
   hasPrismaCode(error, "P2002");
@@ -595,8 +665,12 @@ export const castVote = async ({
   readonly turnId: string;
   readonly answerId: string;
 }): Promise<VoteRefusal | null> =>
-  database()
-    .$transaction(async (tx): Promise<VoteRefusal | null> => {
+  // Wrapped for the same reason `startTurn` is: a vote is the other thing a
+  // person does after reading for a while, so it meets a suspended database on
+  // exactly the same terms, and "that vote could not be saved" would be the
+  // same avoidable lie.
+  withColdStartRetry(() =>
+    database().$transaction(async (tx): Promise<VoteRefusal | null> => {
       const turn = await tx.turn.findFirst({
         where: { id: turnId, thread: { clerkUserId } },
         include: { answers: true, thread: { select: { id: true } } },
@@ -625,7 +699,11 @@ export const castVote = async ({
       });
 
       return null;
-    })
+    }),
+  )
+    // Outside the retry rather than inside it, and the order is load-bearing:
+    // this `catch` turns anything left into a refusal, so wrapping it would
+    // swallow the P2028 before the retry could ever see one.
     .catch((error: unknown) => {
       if (isUniqueViolation(error)) return "already-voted";
 
