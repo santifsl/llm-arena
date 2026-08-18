@@ -3,7 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import { listThreads } from "@/features/arena/queries";
 import { AppShell } from "@/features/shell/app-shell";
 import { toSidebarThread, type SidebarThread } from "@/features/shell/threads";
-import { errorLog } from "@/lib/errors";
+import { reportServerException } from "@/features/analytics/server";
 
 /**
  * Everything the product actually is sits in this group, so it gets the shell.
@@ -29,9 +29,7 @@ const sidebarThreads = async (): Promise<readonly SidebarThread[] | null> => {
   return listThreads(userId)
     .then((threads) => threads.map((thread) => toSidebarThread(thread, now)))
     .catch((error: unknown) => {
-      console.error(
-        `[shell] could not list a person's threads: ${errorLog(error)}`,
-      );
+      reportServerException("could not list a person's threads", error);
 
       return null;
     });

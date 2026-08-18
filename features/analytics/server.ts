@@ -32,13 +32,37 @@ const createClient = (): PostHog => {
     // event would never leave.
     flushAt: 1,
     flushInterval: 0,
+    // A flag read happens during a page render, so its latency is the page's
+    // latency. The SDK's own defaults are three seconds plus a retry, which is
+    // several seconds of a blank screen bought in exchange for an experiment
+    // nobody needs to see. One attempt, one second, and then the caller's
+    // fallback, which is a good answer rather than a degraded one.
+    featureFlagsRequestTimeoutMs: 1000,
+    featureFlagsRequestMaxRetries: 0,
   });
 };
 
 export const analytics = processSingleton("posthog-node", createClient);
 
 export type ArenaEvent =
-  "prompt_submitted" | "answer_completed" | "answer_failed" | "vote_cast";
+  | "prompt_submitted"
+  | "answer_completed"
+  | "answer_failed"
+  /**
+   * The browser hung up while a model was still writing. Captured here rather
+   * than in the tab that left, for the obvious reason.
+   */
+  | "answer_abandoned"
+  /**
+   * A turn reached two completed answers, which is the exact moment a vote
+   * becomes possible. Without it the funnel cannot tell a vote somebody decided
+   * not to cast from a turn that was never votable in the first place, and
+   * "people are not voting" would be indistinguishable from "models are
+   * failing".
+   */
+  | "turn_ready_for_vote"
+  | "answer_retried"
+  | "vote_cast";
 
 /**
  * Captures one event, and never lets analytics break the product. A funnel is
@@ -55,6 +79,42 @@ export const captureArenaEvent = (
   } catch (error) {
     console.error(
       `[arena] could not capture an analytics event ${event}: ${errorLog(error)}`,
+    );
+  }
+};
+
+/**
+ * A failure the product handled, sent somewhere a person will actually see it.
+ *
+ * This app never shows a raw error, by rule, so every one of them ends as a
+ * plain sentence on screen and a line in a serverless log nobody opens. The
+ * sentence is right and the log is not enough: it is the only record that a
+ * thing went wrong, and it is write-only in practice.
+ *
+ * The log line is kept exactly as it was, because it is what a person reads
+ * while a dev server is running. PostHog gets the same failure grouped with
+ * every other instance of it.
+ */
+export const reportServerException = (
+  scope: string,
+  error: unknown,
+  properties: Readonly<Record<string, unknown>> = {},
+): void => {
+  console.error(`[arena] ${scope}: ${errorLog(error)}`);
+
+  try {
+    // Passed through as thrown. `captureException` takes an unknown and works
+    // out what it is given, which is a better answer than wrapping a
+    // non-`Error` here and handing PostHog a stack that points at this line
+    // instead of at whatever actually failed.
+    //
+    // No distinct id: an exception with nobody attached is still worth
+    // grouping, and inventing one would put a person in PostHog who never
+    // existed.
+    analytics().captureException(error, undefined, { scope, ...properties });
+  } catch (failure) {
+    console.error(
+      `[arena] could not report an exception in ${scope}: ${errorLog(failure)}`,
     );
   }
 };

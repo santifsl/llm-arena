@@ -16,18 +16,19 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 
 ## At a glance
 
-| #   | Feature                                     | Phase      | Status                                                               |
-| --- | ------------------------------------------- | ---------- | -------------------------------------------------------------------- |
-| 1   | Connecting to a model                       | Foundation | done; verified end to end against real accounts                      |
-| 2   | Coding standards & tooling                  | Foundation | done; hook tested in both directions                                 |
-| 3   | Data model                                  | Foundation | done; migrated and verified against the real database                |
-| 4   | Design & look                               | Foundation | done; checked by eye in a real browser                               |
-| 5   | Model picker                                | Slice 1    | done; live catalog, and the spending gate checked in a real browser  |
-| 6   | Send a prompt, parallel streams, and voting | Slice 1    | done; both halves verified in a real browser, PostHog events landing |
-| 7   | App shell & thread history                  | Slice 2    | wired to real threads; the by-eye check is the only box left         |
-| 8   | Public thread visibility & sharing          | Slice 3    | built and probed signed out; the by-eye check is the only box left   |
-| 9   | Leaderboard: global & personal              | Slice 4    | UI built on placeholder rows; real query not started                 |
-| 10  | Arcjet on the public thread read            | Slice 3    | built and proven locally; one production check left, see the feature |
+| #   | Feature                                      | Phase      | Status                                                               |
+| --- | -------------------------------------------- | ---------- | -------------------------------------------------------------------- |
+| 1   | Connecting to a model                        | Foundation | done; verified end to end against real accounts                      |
+| 2   | Coding standards & tooling                   | Foundation | done; hook tested in both directions                                 |
+| 3   | Data model                                   | Foundation | done; migrated and verified against the real database                |
+| 4   | Design & look                                | Foundation | done; checked by eye in a real browser                               |
+| 5   | Model picker                                 | Slice 1    | done; live catalog, and the spending gate checked in a real browser  |
+| 6   | Send a prompt, parallel streams, and voting  | Slice 1    | done; both halves verified in a real browser, PostHog events landing |
+| 7   | App shell & thread history                   | Slice 2    | wired to real threads; the by-eye check is the only box left         |
+| 8   | Public thread visibility & sharing           | Slice 3    | built and probed signed out; the by-eye check is the only box left   |
+| 9   | Leaderboard: global & personal               | Slice 4    | done; counts cross-checked against the real database                 |
+| 10  | Arcjet on the public thread read             | Slice 3    | built and proven locally; one production check left, see the feature |
+| 11  | Analytics depth: errors, sharing, and a flag | Slice 5    | built and probed locally; the by-eye and PostHog checks are left     |
 
 ## Foundation
 
@@ -488,7 +489,7 @@ _`features/placeholder/` is down to the leaderboard's standings._ `PLACEHOLDER_T
 
 _Why out of order._ The shell is the frame every other screen sits in, and building the arena first would have meant building it twice: once free-floating, once inside a sidebar and a top bar that change its widths and its scroll container. Everything visual in slice 1 and slice 4 got built at the same time for the same reason. Nothing here makes those features true; each one keeps its own boxes, and each says below what it still owes.
 
-_Every invented value lives in `features/placeholder/`, and nothing else in the app invents one._ That folder is the whole fake surface. Deleting it is how the real features start: the compiler then lists every consumer as a type error, so no placeholder can survive by being forgotten in a file nobody reopened. This is the one thing that keeps "we'll wire it later" from quietly becoming permanent.
+_Every invented value lived in `features/placeholder/`, and nothing else in the app invented one._ That folder was the whole fake surface, and it is now deleted: feature 9 was its last consumer. It did what it was built to do at every step, because the compiler listed every consumer as a type error the moment a slice of it was removed, so no placeholder survived by being forgotten in a file nobody reopened. That is what kept "we'll wire it later" from quietly becoming permanent.
 
 _The route group `app/(app)/` is what gets the shell._ `/proof` and `/design` sit outside it on purpose. Both are throwaway harnesses, and dressing them in the product's own frame would make them look like screens rather than the scaffolding they are.
 
@@ -683,10 +684,98 @@ _Local `next start` cannot prove an IP-keyed rule, and that is why one box above
 
 Two leaderboards from the same votes, one for everyone, one just for the signed-in user. Each row's win rate is the big, bold number, in the accent color, with a small bar next to it, always written as "won 4 of 5," never a bare percentage or a made-up score. Smaller, quieter numbers underneath for average speed and time-to-first-token, each clearly labeled. No cost or "cheapest" stat, every model is free, so that number never means anything here. First place gets a subtle highlight, nobody else does.
 
-_The screen exists on invented rows._ Feature 7's UI build made the table, the global and personal toggle, the first-place highlight, and the `WinRate` component that always prints "won 507 of 700" next to the percentage. What is missing is the query: counting real votes, per model, globally and for one `clerkUserId`, and averaging the real durations already stored on `Answer`.
+_The screen existed on invented rows._ Feature 7's UI build made the table, the global and personal toggle, the first-place highlight, and the `WinRate` component that always prints the real count next to the percentage. What was missing was the query: counting real votes, per model, globally and for one `clerkUserId`, and averaging the real durations already stored on `Answer`. That is what this feature built, and with it `features/placeholder/` is gone.
 
-- [ ] Decide the approach
-- [ ] Build it
+- [x] Decide the approach
+- [x] Build: `features/leaderboard/standings.ts` and `queries.ts`, the screen on real rows, the page counting both boards
+- [x] `components/retry-button.tsx`, and `CatalogUnavailable` and `ThreadUnavailable` moved onto it
+- [x] `features/placeholder/` deleted, its last consumer gone
+- [x] `pnpm verify` clean: typecheck, lint, format check, and a real production build
+- [x] Verified against the real database, 2026-08-17: the rendered global board's five rows, both counts and both averages on each, match the same aggregate run as raw SQL exactly
+
+**The approach, decided 2026-08-17.**
+
+_A model's denominator is the turns it contested, not every turn that was voted._ Contested means it completed an answer and that turn was then voted on. The arena's top bar does something different, dividing each model's wins by the whole thread's voted turns, and that is right there because the same three models race every turn of a thread. Across every thread it would be a lie in two directions: a model would be charged a loss for a race it was never entered in, and for a turn where it failed, which feature 6 will not even offer a vote on until two models complete. So a `FAILED` answer contributes nothing at all here, neither a win nor a loss, which is the honest reading of a model that did not turn up.
+
+_The averages are taken over that same contested set._ Not over every answer the model has ever produced. It keeps one row describing one thing: these many contests, this record, and this is how fast it was in them. It also makes the personal board coherent all the way across, rather than a personal record sitting next to a global speed. Prisma's `_avg` skips nulls rather than counting them as zero, which is exactly right given feature 3's rule that a null metric means the provider did not report the number.
+
+_Two typed `groupBy` calls, not one raw statement._ One over `Answer` grouped by `modelId`, filtered to `COMPLETE` and to turns that have a vote, carrying `_count` and `_avg`. One over `Answer` filtered to answers that are a vote's winner. They are merged and ranked by a pure function in `standings.ts`. Raw SQL would have done it in a single round trip, and it would also have been the one query in the app the compiler cannot check, for a table that will never be large enough to notice the difference.
+
+_One function, one argument, for both boards._ `loadStandings(clerkUserId | null)`. Null counts everybody. A user id narrows the vote filter to `Vote.clerkUserId`, which is exactly the column feature 3 denormalised so this query never joins back through `Thread`. Filtering on the vote rather than on thread ownership is also the version that stays correct if somebody other than an owner is ever allowed to vote.
+
+_Rows key off the real `modelId` and are named through `modelIdentity`._ The placeholder rows borrowed a model by its position in the live catalog, so a delisted model was unrepresentable. Now a model OpenRouter has dropped still appears, labelled with its raw id, which is feature 8's rule about a stored answer applied to a stored vote.
+
+_A model with no contests has no row._ Not a row reading "won 0 of 0". A model nobody has raced has no record, and printing one would read as a loss it never took.
+
+**What building it changed about the plan.**
+
+_A catalog that fails to load no longer replaces the leaderboard._ It used to hand the whole table to `CatalogUnavailable`, which was correct while every row was invented and the catalog was the only real thing on the screen. With real standings that reasoning inverts: the votes are the real thing, and hiding them because a third party is unreachable is the same mistake feature 8 corrected when it stopped dropping answers from unlisted models. The board now renders with raw ids and a small note above it offering a retry.
+
+_Three failure sentences meant the retry button became shared._ `ThreadUnavailable` had already written down that a third one is the point at which the button should be extracted, and the leaderboard's unreadable-standings case is that third one. `components/retry-button.tsx` now owns the refresh and the spinner, and both older components lost their `"use client"` along with it, since the client boundary moved into the button.
+
+_Two states the invented rows never had to consider._ A board with no votes at all, and a personal board with nobody signed in. Neither is an empty table: the first says nobody has voted yet, the second offers a sign-in, and the page decides between them because it is the only place that knows whether there is a user.
+
+_The panel got wired to its tab._ The toggle was already a `tablist` from feature 7's UI build, with no panel associated with it. The standings section is now the `tabpanel`, labelled by whichever tab is selected, so the table announces which set of votes it is rather than being an unnamed region next to two buttons.
+
+## Slice 5: Analytics depth
+
+### 11. What the funnel could not see
+
+Feature 6 shipped an honest five-event funnel and PostHog's own LLM analytics on top of it. This feature is about what that funnel is structurally blind to, which turned out to be four separate things rather than one: every failure the product handles gracefully, everything a person does after receiving a shared link, the difference between leaving mid-answer and finishing, and the constant that decides most of the leaderboard's data.
+
+- [x] Decide the approach
+- [x] Build: PostHog served from this origin, `next.config.ts` rewriting `/ingest` at both the ingestion and the assets host
+- [x] Build: exception capture, `capture_exceptions` in the browser plus `reportServerException` on every handled server failure
+- [x] Build: two error boundaries, `app/(app)/error.tsx` and `app/global-error.tsx`, both reporting and both showing a plain sentence
+- [x] Build: `thread_shared` and `shared_thread_viewed`, the two halves of sharing
+- [x] Build: `answer_abandoned`, `answer_retried`, and `turn_ready_for_vote`
+- [x] Build: `retry_clicked`, with a required `surface`, on the shared retry button
+- [x] Build: the opening model trio behind the `arena-default-models` flag, `features/models/default-models.ts`
+- [x] Build: `pnpm verify` clean, 2026-08-17: typecheck, lint, format check, and a real production build
+- [x] Review fixes: `Turn.readyForVoteAt` and `markTurnReadyForVote`, migration `20260818011019_turn_ready_for_vote`; `settled` set before the terminal write; a one-second flag budget on the server PostHog client; the app error boundary using the shared `RetryButton`
+- [x] Build: `pnpm verify` clean again after the review fixes, 2026-08-18, and the readiness rule proven against the real database: one completed answer does not claim it, two callers racing on separate connections with three answers already complete return `true` and `false`, and a later completion returns `false`
+- [x] Build: the ingest proxy probed on a running server, 2026-08-17. `/ingest/decide` reaches PostHog and is answered `401` for an empty body rather than 404ing at Next; `/ingest/static/recorder.js` and `/ingest/static/array.js` both return the real scripts as `application/javascript`; `/`, `/models`, and `/leaderboard` still render
+- [ ] Checked in a real signed-in browser: the seven new events arriving in PostHog, a session recording still recording through the proxy, and a thrown error appearing under error tracking
+- [ ] The `arena-default-models` flag created in PostHog with a JSON payload of model ids, and a signed-in reload showing the flagged trio instead of the computed one
+- [ ] PostHog, now unblocked by `shared_thread_viewed` and `answer_abandoned`: the two custom scouts from feature 6 can finally be written against a funnel that has a completion step and a drop-off step in it
+
+**The approach, decided 2026-08-17.**
+
+_Every failure this app handles well is a failure nobody will ever hear about._ The rule that a person is never shown a raw exception is right, and its consequence had not been followed through: a handled failure becomes a plain sentence on screen and a `console.error` in a serverless log that nobody opens, so the only record of a real defect happening to a real person is write-only. `reportServerException` keeps the log line exactly as it was, because that is what a person reads while a dev server runs, and sends the same failure to PostHog where instances of it group together. It is deliberately not a new logging layer: `lib/errors.ts` stays pure and every call site still reads as an ordinary catch.
+
+_The exception carries no distinct id, on purpose._ PostHog's server client will take one, and the honest answer here is that a failed thread read or a failed catalog fetch often has nobody attached to it. Inventing an id would put people in PostHog who do not exist, and grouping an exception does not need a person.
+
+_Analytics is served from this origin now._ Sending events straight to `eu.i.posthog.com` is what the default snippet does and it is exactly the pattern a content blocker recognises. A five-event funnel cannot afford that: a blocked event is not a gap in the data, it is a person who reads as never having shown up. Two rewrites rather than one, because ingestion and the replay assets live on different PostHog hosts, and the assets rule has to come first since rewrites match in order. `ui_host` is still the real host, so links out of a replay go to PostHog rather than to a path on this site.
+
+_The proxy cannot be misconfigured into silence, and that is worth stating because it looks like it could._ The rewrite is only added when `NEXT_PUBLIC_POSTHOG_HOST` is present at build time, which reads like a silent fallback. It is not: the same variable is inlined into the browser bundle and validated by `publicEnv()`, so a build without it produces a client that refuses to start long before it would try to send anything. If the app runs in a browser at all, the rewrite was built alongside it.
+
+_`shared_thread_viewed` is the one event that breaks this project's own rule about where events belong, and the reason is the reader._ Everything in feature 6's funnel is captured on the server, because the browser is not trusted for metrics and a closed tab loses events. A visitor reading a shared thread is usually signed out, so a server capture would have no distinct id: it would either invent one per thread, filling PostHog with people who never existed, or drop the person. Captured in the browser it lands on PostHog's own anonymous id, which is the same id that visit's pageviews and session recording already carry, so the view joins up with what the person did next. That is the entire question sharing raises and a server event could not have answered it. The trade is that a blocker can drop this one; the proxy is what makes that rare.
+
+_`answer_abandoned` fires from the request's abort signal, and it deliberately over-counts._ The server drains its own copy of every stream on purpose, so a tab that closes mid-answer still produces `answer_completed` exactly as though somebody watched it, which means leaving was previously invisible. The abort signal is the only honest server-side evidence. A retry aborts its own request too and is counted here as well, because the server genuinely cannot tell the two apart at that moment. `answer_retried` exists to separate them in analysis rather than pretending the ambiguity is not there.
+
+_`turn_ready_for_vote` fires once per turn, on the completion that crosses two._ Without it "people are not voting" and "models are not finishing" are the same shape in the funnel, and they call for opposite fixes. Counting completed answers costs one indexed count per completion, which is cheap next to the model call that just finished. Which completion gets to send it is decided in the database rather than in the route, for the reason under the review findings below.
+
+_The default model trio was the highest-leverage constant in the product and did not look like one._ Almost nobody changes it before their first prompt, so it decides which models most votes are cast on, which means this function rather than any person decides the leaderboard's denominator. Changing it to find a better opening trio should not need a deploy. The flag falls back to `defaultSelectedModelIds` whenever it has nothing usable to say, which is most of the time, and its payload is filtered against the live catalog and capped at three, because a flag naming a delisted model would put a chip on screen that the submit action then refuses the whole turn for.
+
+_Anonymous visitors do not get the flag._ Evaluating against an id invented per request would hand the same person a different trio on every reload, which is worse than no experiment. Signed in, the Clerk user id is the same id the rest of the funnel already keys on, so a person keeps their trio across sessions and the flag joins cleanly to every event they produce.
+
+**What building it changed about the plan.**
+
+_The shared retry button needed a required prop rather than an optional one._ A `retry_clicked` count with no surface on it says only that something somewhere is broken, and the three surfaces fail for completely unrelated reasons. Making `surface` required means every call site has to name itself, which is the whole value of the event.
+
+_Two of feature 6's three open PostHog chores stay open, and one is closer than it was._ All three are configuration inside PostHog rather than code, so none of them could be closed from here. The scouts one is genuinely unblocked further: the submission funnel it was meant to watch now has both a completion step and a drop-off step, which it did not when that chore was written.
+
+_The catalog fetch is still the one handled failure that reports nothing._ `loadArenaCatalog` swallows with `.catch(() => null)` and never holds an error object, so there was nothing to report without restructuring it. Left deliberately: it is a third-party outage rather than a defect in this app, and it is noisy in exactly the way that trains people to ignore an error feed.
+
+**What review found afterwards.**
+
+_Counting completed answers was not enough to send `turn_ready_for_vote` exactly once._ Each model call wrote its own answer and then counted the turn's completed answers, and `count === 2` is wrong in both directions once the calls race: two completions landing together can both read two and send the event twice, and a third landing in between can push every reader past two so nobody sends it at all. Either way the voting funnel's denominator is fiction. `Turn` now carries `readyForVoteAt`, and the count only decides whether the line has been crossed, at two or more rather than exactly two; a single conditional update from null decides who says so, which is a race exactly one caller can win. The column is a real record as well as a lock: it is the moment a turn became votable, which is a thing worth having stored rather than only counted.
+
+_A completed answer could be reported as abandoned._ `settled` was set after the write that persists the completion, so an abort arriving in that window found it still false and captured `answer_abandoned` for an answer that then also captured `answer_completed`. A tab closing at the exact moment a model finishes is not a rare shape, since that is precisely when a person who has stopped waiting gives up. Both handlers now set `settled` before awaiting anything: the model has finished producing output by the time either of them runs, so nothing after that point is abandonment, whatever the transport does.
+
+_Reading the default-models flag put PostHog's latency budget on the render path._ The evaluation is a blocking network call inside a server render, and the SDK's own defaults are three seconds plus a retry, so an unreachable flag service could hold a page for the better part of ten seconds before the fallback it already had was used. The server client now sets `featureFlagsRequestTimeoutMs` to one second with retries off, which is an application-controlled budget rather than a third party's, and a cut-off request arrives as the rejection the fallback already handles. This also corrected a comment that claimed the call was bounded by running alongside the catalog fetch, which it is not and cannot be: the payload can only be filtered once there is a catalog to check it against.
+
+_The app error boundary had rebuilt the retry button in raw classes._ Border, spacing, type, color, and hover were all copied out of `RetryButton`, which is the exact drift the shared-component rule exists to stop, and it already meant the boundary's retry had no disabled state and no spinner. The button now takes an optional `action`, because the one real difference is what trying again calls: a render that threw is recovered by the boundary's `reset`, not by a route refresh. `app-render` joins the three retry surfaces, so the event says which failure a person was trying to get past there too.
 
 ## Not doing right now
 

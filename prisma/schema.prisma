@@ -64,13 +64,22 @@ model Thread {
 /// One prompt round. The prompt text is stored once, on the turn, because every
 /// selected model received exactly the same text.
 model Turn {
-  id        String   @id @default(cuid(2))
-  threadId  String
+  id             String    @id @default(cuid(2))
+  threadId       String
   /// Position within the thread, so a turn is addressable and not merely
   /// sortable by timestamp.
-  index     Int
-  prompt    String
-  createdAt DateTime @default(now())
+  index          Int
+  prompt         String
+  createdAt      DateTime  @default(now())
+  /// When this turn first had two completed answers, which is the moment a vote
+  /// became possible.
+  ///
+  /// Written once, by whichever model call crosses the line, and only ever from
+  /// null. That conditional write is the point: two models finishing at the
+  /// same instant both see two completed answers, and without a single row that
+  /// only one of them can claim, `turn_ready_for_vote` is either sent twice or
+  /// not at all, and the voting funnel is wrong in both directions.
+  readyForVoteAt DateTime?
 
   thread  Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   answers Answer[]

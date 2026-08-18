@@ -3,6 +3,8 @@
 import { Check, Link2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { posthog } from "@/features/analytics/posthog";
+
 /**
  * Copying a thread's link.
  *
@@ -14,6 +16,11 @@ import { useEffect, useRef, useState } from "react";
  *
  * The owner and a visitor both get this, because a link worth reading is a link
  * worth passing on.
+ *
+ * Handing a link over is a client event for the same reason `model_selected`
+ * is: it never reaches a server. It carries how the copy happened, because a
+ * clipboard that refused is a worse share than one that worked, and a run of
+ * them is a real defect rather than a run of people sharing less.
  */
 
 /** Long enough to read, short enough that the button is not stuck saying it. */
@@ -52,6 +59,11 @@ export const ShareLink = ({ threadId }: { readonly threadId: string }) => {
       ?.writeText(url)
       .then(() => true)
       .catch(() => false);
+
+    posthog.capture("thread_shared", {
+      thread_id: threadId,
+      method: wrote === true ? "clipboard" : "manual",
+    });
 
     if (wrote === true) {
       setFallbackUrl(null);
