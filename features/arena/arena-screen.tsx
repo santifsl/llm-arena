@@ -20,6 +20,7 @@ import {
   type ThreadView,
   type TurnView,
 } from "@/features/arena/thread";
+import { posthog } from "@/features/analytics/posthog";
 import { ShareLink } from "@/features/arena/share-link";
 import { useSlowPending } from "@/features/arena/use-slow-pending";
 import { SharedThreadView } from "@/features/arena/shared-thread-view";
@@ -68,6 +69,32 @@ const CLOCK_INTERVAL_MS = 100;
  * nobody has decided the button is broken by the time it does.
  */
 const SLOW_PENDING_MS = 2500;
+
+/**
+ * The sentence for an action that never came back with an answer of its own.
+ *
+ * Every action in `actions.ts` answers rather than throws, so reaching this
+ * means the call itself failed: the network went, the server did, or the
+ * deployment moved underneath an open tab. None of that is something a person
+ * can be told anything useful about, and all of it is worth trying again.
+ */
+const UNREACHABLE = "That didn't reach the arena. Try again.";
+
+/**
+ * The same shape the actions answer with, so a call that failed and a call that
+ * refused travel the same path from here on rather than needing two branches.
+ */
+const refusal = (message: string) =>
+  ({ ok: false, message }) as const satisfies {
+    readonly ok: false;
+    readonly message: string;
+  };
+
+const reportClientException = (error: unknown, scope: string) => {
+  if (!posthog.__loaded) return;
+
+  posthog.captureException(error, { scope });
+};
 
 const setWinner = (
   thread: ThreadView | null,
@@ -205,13 +232,22 @@ export const ArenaScreen = ({
     setNotice(null);
     setSubmitting(true);
 
+    // The action answers rather than throws, so this catches the call failing
+    // instead: a rejection escaping here would leave `submitting` true, which
+    // is the composer disabled and a "still working" line under it, both of
+    // them permanent until a reload. The one failure a person cannot retry is
+    // the one that took the retry away.
     const result = await submitPrompt({
       threadId: thread?.id ?? null,
       prompt,
       modelIds: selectedModelIds,
-    });
+    })
+      .catch((error: unknown) => {
+        reportClientException(error, "prompt-submit");
 
-    setSubmitting(false);
+        return refusal(UNREACHABLE);
+      })
+      .finally(() => setSubmitting(false));
 
     if (!result.ok) {
       setNotice(result.message);
@@ -248,9 +284,13 @@ export const ArenaScreen = ({
     setNotice(null);
     setRetryingId(answer.id);
 
-    const result = await retryModel(answer.id);
+    const result = await retryModel(answer.id)
+      .catch((error: unknown) => {
+        reportClientException(error, "answer-retry");
 
-    setRetryingId(null);
+        return refusal(UNREACHABLE);
+      })
+      .finally(() => setRetryingId(null));
 
     if (!result.ok) {
       setNotice(result.message);

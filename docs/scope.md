@@ -666,6 +666,8 @@ _It is not an error, and the markup says so._ `role="status"` rather than `role=
 - [x] `features/arena/use-slow-pending.ts`, the status line in `ArenaScreen`, and `pnpm verify` clean, 2026-08-17
 - [ ] Checked by hand, folded into the idle test above: after five minutes idle, the line appears a couple of seconds into the submit and disappears when the lanes mount; and a normal warm prompt never shows it at all
 
+_What review found: a rejected action locked the composer, and this change made that worse._ Every action in `actions.ts` answers rather than throws, so the browser only ever handled `ok: false`. The call itself can still fail — the network goes, the server does, or a deployment moves under an open tab — and a rejection escaping `send` skipped `setSubmitting(false)` and the composer's own `setSending(false)`. The send button stayed disabled until a reload. Adding the slow line made the same bug louder rather than causing it: the "still working" sentence would sit there for good, describing a call that had already died. Both flags now clear in a `finally`, the failure becomes the same refusal shape the actions return so there is one path rather than two, and it is reported to PostHog under its own scope. `retry` had the identical shape and is fixed with it.
+
 **The approach, decided 2026-08-15.**
 
 _Only one route opens up._ `/t/[threadId]` and nothing else. The sidebar's list, the submit, vote, and retry actions, and the stream route's claim all keep exactly the gates they have. This feature is a read becoming public, not the app becoming public, and the smaller that surface is the easier it is to say truthfully what a stranger can reach.
