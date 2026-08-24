@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
@@ -12,6 +12,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm build",
+    "postinstall": "prisma generate",
     "prepare": "husky"
   },
   "lint-staged": {
