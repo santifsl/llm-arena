@@ -29,6 +29,7 @@ There are rough hand-drawn sketches for the arena screen, the leaderboard, and t
 | 9   | Leaderboard: global & personal               | Slice 4    | done; counts cross-checked against the real database                 |
 | 10  | Arcjet on the public thread read             | Slice 3    | built and proven locally; one production check left, see the feature |
 | 11  | Analytics depth: errors, sharing, and a flag | Slice 5    | built and probed locally; the by-eye and PostHog checks are left     |
+| 12  | A retry that fails again                     | Slice 5    | built and `pnpm verify` clean; the by-eye check is left              |
 
 ## Foundation
 
@@ -820,6 +821,28 @@ _A completed answer could be reported as abandoned._ `settled` was set after the
 _Reading the default-models flag put PostHog's latency budget on the render path._ The evaluation is a blocking network call inside a server render, and the SDK's own defaults are three seconds plus a retry, so an unreachable flag service could hold a page for the better part of ten seconds before the fallback it already had was used. The server client now sets `featureFlagsRequestTimeoutMs` to one second with retries off, which is an application-controlled budget rather than a third party's, and a cut-off request arrives as the rejection the fallback already handles. This also corrected a comment that claimed the call was bounded by running alongside the catalog fetch, which it is not and cannot be: the payload can only be filtered once there is a catalog to check it against.
 
 _The app error boundary had rebuilt the retry button in raw classes._ Border, spacing, type, color, and hover were all copied out of `RetryButton`, which is the exact drift the shared-component rule exists to stop, and it already meant the boundary's retry had no disabled state and no spinner. The button now takes an optional `action`, because the one real difference is what trying again calls: a render that threw is recovered by the boundary's `reset`, not by a route refresh. `app-render` joins the three retry surfaces, so the event says which failure a person was trying to get past there too.
+
+### 12. A retry that fails again
+
+A free model that is rate-limited upstream, or that refuses every call from an app like this one, fails a retry in well under a second. The card then came back with the same sentence it had before, and "Starting" lasted only as long as the server action. In a real session somebody pressed the retry four times, saw nothing change, and left the thread.
+
+**The approach, decided 2026-10-26.**
+
+_The card says that the retry happened._ `ArenaScreen` keeps a retry history for each answer, in the browser only. A retry that fails again adds one to the count, and the card shows "Tried again, still no answer" under the failure sentence. The card now looks different after each try, so the button no longer reads as dead.
+
+_A failed retry holds the next one for 15 seconds._ The button counts down ("Try again in 12 s") and the card says why: free models are often busy for a moment. The arena clock keeps ticking until the last cooldown ends, and then stops like it does after a race. For the quota kind the card does not add the busy sentence, because the quota sentence already says why and when it lifts.
+
+_After three failed retries the card stops offering one._ It tells the person to send the next prompt without that model. This covers a model that always refuses without a list of model ids to keep up to date, and three tries is enough for a short rate limit to clear.
+
+_No new failure kind, on purpose._ A `RATE_LIMITED` value would let the card name the cause, but it needs an enum migration, and the build does not run `prisma migrate deploy`. If the code ships before the migration, every rate-limited write fails and the row stays `STREAMING`. The cooldown applies to every failed retry, so it needs no classification. The draft PR that added a rate-limit kind (#6) was based on a branch that is now merged and on an older failure model, so this replaces it.
+
+_The count is not stored._ A reload starts it at zero again, which costs one more try and no schema. `answer_retried` and `answer_failed` already measure the outcome: fewer retries of one answer that fail again within five seconds.
+
+- [x] Decide the approach
+- [x] Build: the retry history and the cooldown in `ArenaScreen`, the retry sentences and the countdown in `AnswerCard`
+- [x] Build: `pnpm verify` clean, 2026-10-26: typecheck, lint, format check, and a real production build
+- [x] Build: the five card states rendered to static markup and read: first failure, a failed retry while it cools down, after the cooldown, the quota kind, and three failed retries with no button
+- [ ] Checked by eye in a real signed-in browser: a model that fails (an upstream rate limit, or a model that refuses every call), the retry pressed, the "Tried again" line and the countdown seen, and the button gone after the third failed retry
 
 ## Not doing right now
 

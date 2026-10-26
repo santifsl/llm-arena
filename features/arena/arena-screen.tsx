@@ -63,6 +63,9 @@ const COLUMNS: Readonly<Record<number, string>> = {
 
 const CLOCK_INTERVAL_MS = 100;
 
+/** A countdown only changes once a second, so it needs no faster clock. */
+const COUNTDOWN_INTERVAL_MS = 1000;
+
 /**
  * How long a submit or a retry may run before the wait is worth explaining.
  * Long enough that a healthy round trip never reaches it, short enough that
@@ -89,6 +92,58 @@ const refusal = (message: string) =>
     readonly ok: false;
     readonly message: string;
   };
+
+/**
+ * How long a retry that failed again holds the next one back.
+ *
+ * A free model that is rate-limited upstream fails a retry in well under a
+ * second, and an immediate second retry lands in the same limit. The wait is
+ * short enough to sit through and long enough for a busy model to recover.
+ */
+const RETRY_COOLDOWN_MS = 15_000;
+
+/**
+ * What this session has seen of one answer's retries. Kept in the browser only:
+ * a reload starts the count again, which costs one more try and no schema.
+ */
+type RetryHistory = {
+  readonly failedRetries: number;
+  readonly cooldownUntil: number;
+};
+
+type RetryHistories = Readonly<Record<string, RetryHistory>>;
+
+const NO_RETRY_HISTORY: RetryHistory = { failedRetries: 0, cooldownUntil: 0 };
+
+/**
+ * The history after a lane settles. Only an answer that is being retried has an
+ * entry, so a first attempt failing leaves this alone. A retry that answers
+ * clears its entry; one that fails again counts and starts the cooldown.
+ */
+const afterSettle = (
+  histories: RetryHistories,
+  answerId: string,
+  state: AnswerView["state"],
+  now: number,
+): RetryHistories => {
+  const history = histories[answerId];
+
+  if (history === undefined) return histories;
+
+  if (state !== "failed") {
+    return Object.fromEntries(
+      Object.entries(histories).filter(([id]) => id !== answerId),
+    );
+  }
+
+  return {
+    ...histories,
+    [answerId]: {
+      failedRetries: history.failedRetries + 1,
+      cooldownUntil: now + RETRY_COOLDOWN_MS,
+    },
+  };
+};
 
 const reportClientException = (error: unknown, scope: string) => {
   if (!posthog.__loaded) return;
@@ -160,6 +215,7 @@ export const ArenaScreen = ({
   const [now, setNow] = useState(() => Date.now());
   const [notice, setNotice] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryHistories, setRetryHistories] = useState<RetryHistories>({});
   const [submitting, setSubmitting] = useState(false);
 
   /**
@@ -182,13 +238,24 @@ export const ArenaScreen = ({
 
   const liveIds = Object.keys(startedAt);
 
-  useEffect(() => {
-    if (liveIds.length === 0) return;
+  // The clock also drives a retry's countdown, so it keeps ticking until the
+  // last cooldown has run out, and then stops like it does after a race.
+  const ticking =
+    liveIds.length > 0 ||
+    Object.values(retryHistories).some(
+      ({ cooldownUntil }) => cooldownUntil > now,
+    );
 
-    const clock = setInterval(() => setNow(Date.now()), CLOCK_INTERVAL_MS);
+  const clockIntervalMs =
+    liveIds.length > 0 ? CLOCK_INTERVAL_MS : COUNTDOWN_INTERVAL_MS;
+
+  useEffect(() => {
+    if (!ticking) return;
+
+    const clock = setInterval(() => setNow(Date.now()), clockIntervalMs);
 
     return () => clearInterval(clock);
-  }, [liveIds.length]);
+  }, [ticking, clockIntervalMs]);
 
   /**
    * The new thread joins the sidebar once nothing is streaming.
@@ -225,6 +292,9 @@ export const ArenaScreen = ({
       Object.fromEntries(
         Object.entries(previous).filter(([id]) => id !== answerId),
       ),
+    );
+    setRetryHistories((previous) =>
+      afterSettle(previous, answerId, settled.state, Date.now()),
     );
   }, []);
 
@@ -302,6 +372,10 @@ export const ArenaScreen = ({
         ? previous
         : replaceAnswer(previous, answer.id, result.answer),
     );
+    setRetryHistories((previous) => ({
+      ...previous,
+      [answer.id]: previous[answer.id] ?? NO_RETRY_HISTORY,
+    }));
     setStartedAt((previous) => ({ ...previous, [answer.id]: Date.now() }));
   };
 
@@ -367,6 +441,7 @@ export const ArenaScreen = ({
             // outlives the catalog, and an answer quietly vanishing out of a
             // record somebody was sent a link to is the worst version of that.
             const model = modelIdentity(models, answer.modelId);
+            const retryHistory = retryHistories[answer.id] ?? NO_RETRY_HISTORY;
 
             return startedAt[answer.id] === undefined ? (
               <AnswerCard
@@ -389,6 +464,8 @@ export const ArenaScreen = ({
                     : undefined
                 }
                 retrying={retryingId === answer.id}
+                failedRetries={retryHistory.failedRetries}
+                retryCooldownMs={Math.max(0, retryHistory.cooldownUntil - now)}
               />
             ) : (
               <LiveAnswer
