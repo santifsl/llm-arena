@@ -35,6 +35,10 @@ type AnswerCardProps = {
   readonly onPick?: () => void;
   readonly onRetry?: () => void;
   readonly retrying?: boolean;
+  /** Retries of this answer, in this session, that failed again. */
+  readonly failedRetries?: number;
+  /** How long until the next retry is offered. Zero when it is ready now. */
+  readonly retryCooldownMs?: number;
   /**
    * A reader who does not own this thread. The pick control is removed rather
    * than disabled: a disabled control is a promise that it could become usable,
@@ -63,6 +67,38 @@ const FAILURE_SENTENCE: Readonly<Record<FailureKind, string>> = {
     "The arena has used up its free model requests for today. Every model is affected, and the allowance resets at midnight UTC.",
 };
 
+/**
+ * How many failed retries a card offers another one after.
+ *
+ * Some models refuse every call from an app like this one, and no number of
+ * retries changes that. A button that is still there after three identical
+ * failures reads as a promise the model is about to answer, so the card stops
+ * making it and points at the action that does work.
+ */
+const MAX_FAILED_RETRIES = 3;
+
+/**
+ * What the card says once a retry has failed too.
+ *
+ * Without it a retry that fails in a fraction of a second puts back the exact
+ * card that was there before, and the button reads as dead. The busy sentence
+ * is only for the provider kind: the quota sentence above it already says why,
+ * and when it lifts.
+ */
+const retryOutcome = (
+  failedRetries: number,
+  failure: FailureKind,
+  coolingDown: boolean,
+): string => {
+  if (failedRetries >= MAX_FAILED_RETRIES) {
+    return `Tried ${failedRetries} more times, still no answer. This model keeps failing right now, so send your next prompt without it.`;
+  }
+
+  return coolingDown && failure === "provider"
+    ? "Tried again, still no answer. Free models are often busy for a moment, so the next try waits a few seconds."
+    : "Tried again, still no answer.";
+};
+
 const formatMs = (ms: number): string =>
   ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 
@@ -79,6 +115,8 @@ export const AnswerCard = ({
   onPick,
   onRetry,
   retrying = false,
+  failedRetries = 0,
+  retryCooldownMs = 0,
   readOnly = false,
 }: AnswerCardProps) => {
   const [metricsOpen, setMetricsOpen] = useState(false);
@@ -86,6 +124,8 @@ export const AnswerCard = ({
   /** Still running, but not into this card. Nothing here will fill it in. */
   const pending = answer.state === "streaming" && !live;
   const { metrics } = answer;
+  const failure = answer.failure ?? "provider";
+  const cooldownSeconds = Math.ceil(retryCooldownMs / 1000);
 
   return (
     <article
@@ -147,17 +187,26 @@ export const AnswerCard = ({
           <div className="flex flex-col items-start gap-2 text-sm text-fail">
             <p className="flex items-start gap-2">
               <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-              {FAILURE_SENTENCE[answer.failure ?? "provider"]}
+              {FAILURE_SENTENCE[failure]}
             </p>
-            {onRetry !== undefined && (
+            {failedRetries > 0 && (
+              <p className="text-ink-dim">
+                {retryOutcome(failedRetries, failure, cooldownSeconds > 0)}
+              </p>
+            )}
+            {onRetry !== undefined && failedRetries < MAX_FAILED_RETRIES && (
               <button
                 type="button"
                 onClick={onRetry}
-                disabled={retrying}
+                disabled={retrying || cooldownSeconds > 0}
                 className="inline-flex items-center gap-1.5 rounded-sm border border-rule px-2 py-1 text-xs text-ink hover:border-rust disabled:opacity-40"
               >
                 <RotateCw className="size-3.5" aria-hidden />
-                {retrying ? "Starting" : "Try this model again"}
+                {retrying
+                  ? "Starting"
+                  : cooldownSeconds > 0
+                    ? `Try again in ${cooldownSeconds} s`
+                    : "Try this model again"}
               </button>
             )}
           </div>
