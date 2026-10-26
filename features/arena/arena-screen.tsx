@@ -63,6 +63,9 @@ const COLUMNS: Readonly<Record<number, string>> = {
 
 const CLOCK_INTERVAL_MS = 100;
 
+/** A countdown only changes once a second, so it needs no faster clock. */
+const COUNTDOWN_INTERVAL_MS = 1000;
+
 /**
  * How long a submit or a retry may run before the wait is worth explaining.
  * Long enough that a healthy round trip never reaches it, short enough that
@@ -243,13 +246,16 @@ export const ArenaScreen = ({
       ({ cooldownUntil }) => cooldownUntil > now,
     );
 
+  const clockIntervalMs =
+    liveIds.length > 0 ? CLOCK_INTERVAL_MS : COUNTDOWN_INTERVAL_MS;
+
   useEffect(() => {
     if (!ticking) return;
 
-    const clock = setInterval(() => setNow(Date.now()), CLOCK_INTERVAL_MS);
+    const clock = setInterval(() => setNow(Date.now()), clockIntervalMs);
 
     return () => clearInterval(clock);
-  }, [ticking]);
+  }, [ticking, clockIntervalMs]);
 
   /**
    * The new thread joins the sidebar once nothing is streaming.

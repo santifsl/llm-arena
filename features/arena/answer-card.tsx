@@ -126,6 +126,12 @@ export const AnswerCard = ({
   const { metrics } = answer;
   const failure = answer.failure ?? "provider";
   const cooldownSeconds = Math.ceil(retryCooldownMs / 1000);
+  const coolingDown = cooldownSeconds > 0;
+  const retryLabel = retrying
+    ? "Starting"
+    : coolingDown
+      ? `Try again in ${cooldownSeconds} s`
+      : "Try this model again";
 
   return (
     <article
@@ -191,22 +197,18 @@ export const AnswerCard = ({
             </p>
             {failedRetries > 0 && (
               <p className="text-ink-dim">
-                {retryOutcome(failedRetries, failure, cooldownSeconds > 0)}
+                {retryOutcome(failedRetries, failure, coolingDown)}
               </p>
             )}
             {onRetry !== undefined && failedRetries < MAX_FAILED_RETRIES && (
               <button
                 type="button"
                 onClick={onRetry}
-                disabled={retrying || cooldownSeconds > 0}
+                disabled={retrying || coolingDown}
                 className="inline-flex items-center gap-1.5 rounded-sm border border-rule px-2 py-1 text-xs text-ink hover:border-rust disabled:opacity-40"
               >
                 <RotateCw className="size-3.5" aria-hidden />
-                {retrying
-                  ? "Starting"
-                  : cooldownSeconds > 0
-                    ? `Try again in ${cooldownSeconds} s`
-                    : "Try this model again"}
+                {retryLabel}
               </button>
             )}
           </div>
